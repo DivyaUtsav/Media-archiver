@@ -1,0 +1,10 @@
+{
+  "source_platform": "Reddit",
+  "source_url": "https://reddit.com/r/test/comments/abc1",
+  "source_platform_url": null,
+  "platform_context": {
+    "subreddit": "test",
+    "title": "sample",
+    "flair": "Fanart"
+  }
+}

@@ -1,0 +1,24 @@
+[
+  {
+    "file_path": "C:/replace/with/local/file1.jpg",
+    "source_url": "https://reddit.com/r/OnePiece/comments/example1",
+    "source_platform_url": "https://pixiv.net/en/artworks/00000001",
+    "source_platform_name": "Reddit",
+    "platform_context": {
+      "subreddit": "OnePiece",
+      "title": "Zoro fanart by ArtistName",
+      "flair": "Fanart"
+    }
+  },
+  {
+    "file_path": "C:/replace/with/local/file2.png",
+    "source_url": "https://reddit.com/r/EldenRing/comments/example2",
+    "source_platform_url": null,
+    "source_platform_name": "Reddit",
+    "platform_context": {
+      "subreddit": "Eldenring",
+      "title": "Malenia artwork",
+      "flair": "Fan Art"
+    }
+  }
+]

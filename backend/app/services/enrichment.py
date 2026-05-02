@@ -1,0 +1,322 @@
+import json
+import re
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.models import (
+    Artist,
+    Artwork,
+    ArtworkCharacter,
+    ArtworkPendingTag,
+    Character,
+    Series,
+    SourcePlatform,
+)
+from app.services.enrichment_providers import (
+    ArtTypeProvider,
+    ContentRatingProvider,
+    TextExtractionProvider,
+    get_art_type_provider,
+    get_content_provider,
+    get_text_provider,
+)
+from app.services.storage import resolve_review_destination
+
+AUTO_TAG_MINIMUM = 0.80
+
+
+@dataclass
+class EnrichmentStats:
+    processed: int = 0
+    moved_to_gallery: int = 0
+    moved_to_pending: int = 0
+
+
+def _contains_phrase(text: str, phrase: str) -> bool:
+    if not phrase.strip():
+        return False
+    pattern = rf"\b{re.escape(phrase.lower())}\b"
+    return re.search(pattern, text.lower()) is not None
+
+
+def _read_sidecar(sidecar_path: Path) -> dict | None:
+    try:
+        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _get_or_create_platform(db: Session, name: str | None) -> SourcePlatform | None:
+    if not name:
+        return None
+    existing = db.scalar(select(SourcePlatform).where(SourcePlatform.name == name))
+    if existing:
+        return existing
+    created = SourcePlatform(name=name)
+    db.add(created)
+    db.flush()
+    return created
+
+
+def _match_graph_entities(db: Session, context_text: str) -> tuple[list[dict], list[dict], dict | None]:
+    characters: list[dict] = []
+    artists: list[dict] = []
+    publication_platform: dict | None = None
+
+    for character in db.execute(select(Character)).scalars().all():
+        if _contains_phrase(context_text, character.name):
+            characters.append({"name": character.name, "character_id": character.id, "confidence": 0.85, "source": "graph"})
+
+    for artist in db.execute(select(Artist)).scalars().all():
+        if _contains_phrase(context_text, artist.name):
+            artists.append({"name": artist.name, "artist_id": artist.id, "confidence": 0.75, "source": "graph"})
+
+    for platform in db.execute(select(SourcePlatform)).scalars().all():
+        if _contains_phrase(context_text, platform.name):
+            publication_platform = {
+                "name": platform.name,
+                "platform_id": platform.id,
+                "confidence": 0.75,
+                "source": "graph",
+            }
+            break
+
+    return characters, artists, publication_platform
+
+
+def _route_pending_categories(tags: dict) -> list[str]:
+    pending_categories: list[str] = []
+    characters = tags["characters"]
+    if not characters or any(item["confidence"] < AUTO_TAG_MINIMUM for item in characters):
+        pending_categories.append("character")
+
+    artists = tags["artists"]
+    if artists and any(item["confidence"] < AUTO_TAG_MINIMUM for item in artists):
+        pending_categories.append("artist")
+
+    platform = tags["publication_platform"]
+    if platform and platform["confidence"] < AUTO_TAG_MINIMUM:
+        pending_categories.append("source_platform")
+
+    rating = tags["content_rating"]
+    if rating["value"] is None or rating["value"] == "Suggestive" or rating["confidence"] < AUTO_TAG_MINIMUM:
+        pending_categories.append("content_rating")
+
+    art_type = tags["art_type"]
+    if art_type["value"] is None or art_type["confidence"] < AUTO_TAG_MINIMUM:
+        pending_categories.append("art_type")
+    return pending_categories
+
+
+def _replace_pending(db: Session, artwork_id: int, tags: dict, pending_categories: list[str]) -> None:
+    db.query(ArtworkPendingTag).where(ArtworkPendingTag.artwork_id == artwork_id).delete()
+    for category in pending_categories:
+        suggestion = None
+        if category == "character":
+            suggestion = tags["characters"]
+        elif category == "artist":
+            suggestion = tags["artists"]
+        elif category == "source_platform":
+            suggestion = tags["publication_platform"]
+        elif category == "content_rating":
+            suggestion = tags["content_rating"]
+        elif category == "art_type":
+            suggestion = tags["art_type"]
+        db.add(ArtworkPendingTag(artwork_id=artwork_id, tag_category=category, suggestion=suggestion))
+
+
+def _replace_artwork_characters(db: Session, artwork_id: int, characters: list[dict]) -> list[str]:
+    db.query(ArtworkCharacter).where(ArtworkCharacter.artwork_id == artwork_id).delete()
+    ids = []
+    for item in characters:
+        cid = item.get("character_id")
+        if cid is None:
+            continue
+        ids.append(cid)
+        db.add(ArtworkCharacter(artwork_id=artwork_id, character_id=cid, confidence=item["confidence"], is_manual=False))
+    if not ids:
+        return []
+    rows = db.execute(select(Series.name).join(Character, Character.series_id == Series.id).where(Character.id.in_(ids))).all()
+    return sorted({name for (name,) in rows})
+
+
+def _replace_artwork_artists(db: Session, artwork_id: int, artists: list[dict]) -> None:
+    from app.models import ArtworkArtist
+
+    db.query(ArtworkArtist).where(ArtworkArtist.artwork_id == artwork_id).delete()
+    for item in artists:
+        aid = item.get("artist_id")
+        if aid is None:
+            continue
+        db.add(ArtworkArtist(artwork_id=artwork_id, artist_id=aid, confidence=item["confidence"], is_manual=False))
+
+
+def _find_character_by_name(db: Session, name: str) -> Character | None:
+    return db.scalar(select(Character).where(Character.name.ilike(name)))
+
+
+def _find_artist_by_name(db: Session, name: str) -> Artist | None:
+    return db.scalar(select(Artist).where(Artist.name.ilike(name)))
+
+
+def _find_platform_by_name(db: Session, name: str | None) -> SourcePlatform | None:
+    if not name:
+        return None
+    return db.scalar(select(SourcePlatform).where(SourcePlatform.name.ilike(name)))
+
+
+def run_enrichment(
+    db: Session,
+    text_provider: TextExtractionProvider | None = None,
+    content_provider: ContentRatingProvider | None = None,
+    art_type_provider: ArtTypeProvider | None = None,
+) -> EnrichmentStats:
+    stats = EnrichmentStats()
+    settings.archive_root.mkdir(parents=True, exist_ok=True)
+    (settings.archive_root / "_pending").mkdir(parents=True, exist_ok=True)
+    text_provider = text_provider or get_text_provider(settings.enrichment_text_provider)
+    content_provider = content_provider or get_content_provider(settings.enrichment_content_provider)
+    art_type_provider = art_type_provider or get_art_type_provider(settings.enrichment_art_type_provider)
+
+    for sidecar_path in settings.handoff_root.glob("*.json"):
+        media_path = sidecar_path.with_suffix("")
+        if not media_path.exists():
+            continue
+        sidecar = _read_sidecar(sidecar_path)
+        if sidecar is None:
+            continue
+
+        source_url = sidecar.get("source_url")
+        if not source_url:
+            continue
+        artwork = db.scalar(select(Artwork).where(Artwork.source_url == source_url))
+        if not artwork:
+            continue
+
+        context = sidecar.get("platform_context") or {}
+        text_blob = " ".join([str(context.get("subreddit") or ""), str(context.get("title") or ""), str(context.get("flair") or "")])
+
+        graph_characters, graph_artists, publication_platform = _match_graph_entities(db, text_blob)
+        try:
+            extraction = text_provider.extract(
+                subreddit=str(context.get("subreddit") or ""),
+                title=str(context.get("title") or ""),
+                flair=str(context.get("flair") or ""),
+                already_identified={"characters": [c["name"] for c in graph_characters], "artists": [a["name"] for a in graph_artists]},
+            )
+        except Exception:
+            if settings.enrichment_strict_providers:
+                raise
+            extraction = get_text_provider("none").extract("", "", "", {})
+
+        characters = list(graph_characters)
+        known_character_names = {c["name"].lower() for c in characters}
+        for name in extraction.characters:
+            if name.lower() in known_character_names:
+                continue
+            matched = _find_character_by_name(db, name)
+            characters.append(
+                {
+                    "name": name,
+                    "character_id": matched.id if matched else None,
+                    "confidence": 0.65,
+                    "source": "slm",
+                }
+            )
+
+        artists = list(graph_artists)
+        known_artist_names = {a["name"].lower() for a in artists}
+        for name in extraction.artists:
+            if name.lower() in known_artist_names:
+                continue
+            matched_artist = _find_artist_by_name(db, name)
+            artists.append(
+                {
+                    "name": name,
+                    "artist_id": matched_artist.id if matched_artist else None,
+                    "confidence": 0.70,
+                    "source": "slm",
+                }
+            )
+        if publication_platform is None and extraction.source_platform:
+            matched_platform = _find_platform_by_name(db, extraction.source_platform)
+            publication_platform = {
+                "name": extraction.source_platform,
+                "platform_id": matched_platform.id if matched_platform else None,
+                "confidence": 0.75,
+                "source": "slm",
+            }
+
+        platform_name = sidecar.get("source_platform")
+        platform_row = _get_or_create_platform(db, platform_name)
+        if artwork.source_platform_id is None and platform_row:
+            artwork.source_platform_id = platform_row.id
+
+        subreddit = str(context.get("subreddit") or "").lower()
+        try:
+            content_result = content_provider.classify(media_path, subreddit_is_nsfw=any(flag in subreddit for flag in ("nsfw", "hentai", "rule34")))
+        except Exception:
+            if settings.enrichment_strict_providers:
+                raise
+            content_result = get_content_provider("none").classify(media_path, subreddit_is_nsfw=False)
+        try:
+            art_type_result = art_type_provider.classify(media_path)
+        except Exception:
+            if settings.enrichment_strict_providers:
+                raise
+            art_type_result = get_art_type_provider("none").classify(media_path)
+        content_rating = {"value": content_result.value, "confidence": content_result.confidence, "source": content_result.source}
+        art_type = {"value": art_type_result.value, "confidence": art_type_result.confidence, "source": art_type_result.source}
+
+        tags = {
+            "characters": characters,
+            "artists": artists,
+            "publication_platform": publication_platform,
+            "content_rating": content_rating,
+            "art_type": art_type,
+        }
+        pending_categories = _route_pending_categories(tags)
+        _replace_pending(db, artwork.id, tags, pending_categories)
+
+        artwork.content_rating = content_rating["value"] if content_rating["value"] in {"SFW", "Suggestive", "NSFW"} else None
+        artwork.content_rating_confidence = content_rating["confidence"]
+        artwork.content_rating_is_manual = False
+        artwork.art_type = art_type["value"] if art_type["value"] in {"Artwork", "Cosplay", "AI Generated"} else None
+        artwork.art_type_confidence = art_type["confidence"]
+        artwork.art_type_is_manual = False
+        if publication_platform and publication_platform.get("platform_id"):
+            artwork.publication_platform_id = publication_platform["platform_id"]
+            artwork.publication_platform_confidence = publication_platform["confidence"]
+            artwork.publication_platform_is_manual = False
+
+        series_names = _replace_artwork_characters(db, artwork.id, characters)
+        _replace_artwork_artists(db, artwork.id, artists)
+
+        artwork.status = "pending_review" if pending_categories else "gallery"
+        destination = resolve_review_destination(settings.archive_root, series_names if artwork.status == "gallery" else [])
+        destination.mkdir(parents=True, exist_ok=True)
+        final_media = destination / media_path.name
+        try:
+            shutil.move(str(media_path), str(final_media))
+            sidecar_path.unlink(missing_ok=True)
+            artwork.file_path = str(final_media)
+            artwork.file_missing = False
+        except OSError:
+            # Move failed — leave the file in the handoff dir and flag the record.
+            artwork.file_missing = True
+        stats.processed += 1
+        if artwork.status == "gallery":
+            stats.moved_to_gallery += 1
+        else:
+            stats.moved_to_pending += 1
+        db.add(artwork)
+        db.commit()
+    return stats
