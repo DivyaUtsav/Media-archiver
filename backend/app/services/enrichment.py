@@ -202,13 +202,20 @@ def run_enrichment(
             continue
 
         context = sidecar.get("platform_context") or {}
-        text_blob = " ".join([str(context.get("subreddit") or ""), str(context.get("title") or ""), str(context.get("flair") or "")])
+        # Build text blob from whatever platform context fields are available
+        text_blob = " ".join(filter(None, [
+            str(context.get("subreddit") or ""),
+            str(context.get("title") or ""),
+            str(context.get("flair") or ""),
+            str(context.get("content") or ""),
+            str(context.get("author") or ""),
+        ]))
 
         graph_characters, graph_artists, publication_platform = _match_graph_entities(db, text_blob)
         try:
             extraction = text_provider.extract(
                 subreddit=str(context.get("subreddit") or ""),
-                title=str(context.get("title") or ""),
+                title=str(context.get("title") or context.get("content") or ""),
                 flair=str(context.get("flair") or ""),
                 already_identified={"characters": [c["name"] for c in graph_characters], "artists": [a["name"] for a in graph_artists]},
             )
@@ -255,14 +262,32 @@ def run_enrichment(
                 "source": "slm",
             }
 
+        # Auto-suggest Twitter author as artist if not already identified
+        twitter_author = str(context.get("author") or "")
+        if twitter_author and sidecar.get("source_platform") == "Twitter":
+            author_lower = twitter_author.lower()
+            if author_lower not in {a["name"].lower() for a in artists}:
+                matched_artist = _find_artist_by_name(db, twitter_author)
+                artists.append({
+                    "name": twitter_author,
+                    "artist_id": matched_artist.id if matched_artist else None,
+                    "confidence": 0.80,
+                    "source": "graph" if matched_artist else "slm",
+                })
+
         platform_name = sidecar.get("source_platform")
         platform_row = _get_or_create_platform(db, platform_name)
         if artwork.source_platform_id is None and platform_row:
             artwork.source_platform_id = platform_row.id
 
+        # Twitter sensitive flag
+        twitter_sensitive = bool((context or {}).get("sensitive", False))
         subreddit = str(context.get("subreddit") or "").lower()
+        is_nsfw_context = twitter_sensitive or any(
+            flag in subreddit for flag in ("nsfw", "hentai", "rule34")
+        )
         try:
-            content_result = content_provider.classify(media_path, subreddit_is_nsfw=any(flag in subreddit for flag in ("nsfw", "hentai", "rule34")))
+            content_result = content_provider.classify(media_path, subreddit_is_nsfw=is_nsfw_context)
         except Exception:
             if settings.enrichment_strict_providers:
                 raise
@@ -319,4 +344,94 @@ def run_enrichment(
             stats.moved_to_pending += 1
         db.add(artwork)
         db.commit()
+    return stats
+
+def run_re_enrichment(db: Session) -> dict:
+    stats = {"processed": 0, "resolved": 0, "still_pending": 0}
+    
+    pending_artworks = db.execute(
+        select(Artwork).where(Artwork.status == "pending_review")
+    ).scalars().all()
+
+    for artwork in pending_artworks:
+        pending_categories = set(
+            db.execute(
+                select(ArtworkPendingTag.tag_category)
+                .where(ArtworkPendingTag.artwork_id == artwork.id)
+            ).scalars().all()
+        )
+        if not pending_categories:
+            continue
+
+        context = artwork.platform_context or {}
+        text_blob = " ".join([
+            str(context.get("subreddit") or ""),
+            str(context.get("title") or ""),
+            str(context.get("flair") or "")
+        ])
+
+        graph_characters, graph_artists, publication_platform = _match_graph_entities(db, text_blob)
+
+        resolved_categories = set()
+
+        # Re-evaluate characters
+        if "character" in pending_categories:
+            if graph_characters and all(c["confidence"] >= AUTO_TAG_MINIMUM for c in graph_characters):
+                series_names = _replace_artwork_characters(db, artwork.id, graph_characters)
+                db.query(ArtworkPendingTag).filter(
+                    ArtworkPendingTag.artwork_id == artwork.id,
+                    ArtworkPendingTag.tag_category == "character"
+                ).delete()
+                resolved_categories.add("character")
+
+        # Re-evaluate artists
+        if "artist" in pending_categories:
+            if graph_artists and all(a["confidence"] >= AUTO_TAG_MINIMUM for a in graph_artists):
+                _replace_artwork_artists(db, artwork.id, graph_artists)
+                db.query(ArtworkPendingTag).filter(
+                    ArtworkPendingTag.artwork_id == artwork.id,
+                    ArtworkPendingTag.tag_category == "artist"
+                ).delete()
+                resolved_categories.add("artist")
+
+        # Re-evaluate publication platform
+        if "source_platform" in pending_categories:
+            if publication_platform and publication_platform["confidence"] >= AUTO_TAG_MINIMUM:
+                artwork.publication_platform_id = publication_platform["platform_id"]
+                artwork.publication_platform_confidence = publication_platform["confidence"]
+                artwork.publication_platform_is_manual = False
+                db.query(ArtworkPendingTag).filter(
+                    ArtworkPendingTag.artwork_id == artwork.id,
+                    ArtworkPendingTag.tag_category == "source_platform"
+                ).delete()
+                resolved_categories.add("source_platform")
+
+        # Check if all pending categories are now resolved
+        remaining = pending_categories - resolved_categories
+        if not remaining:
+            # Move file from _pending to correct destination
+            current_path = Path(artwork.file_path)
+            series_names = sorted({
+                name for (name,) in db.execute(
+                    select(Series.name)
+                    .join(Character, Character.series_id == Series.id)
+                    .join(ArtworkCharacter, ArtworkCharacter.character_id == Character.id)
+                    .where(ArtworkCharacter.artwork_id == artwork.id)
+                ).all()
+            })
+            destination = resolve_review_destination(settings.archive_root, series_names)
+            destination.mkdir(parents=True, exist_ok=True)
+            destination_path = destination / current_path.name
+            if current_path.exists():
+                shutil.move(str(current_path), str(destination_path))
+                artwork.file_path = str(destination_path)
+            artwork.status = "gallery"
+            stats["resolved"] += 1
+        else:
+            stats["still_pending"] += 1
+
+        stats["processed"] += 1
+        db.add(artwork)
+        db.commit()
+
     return stats

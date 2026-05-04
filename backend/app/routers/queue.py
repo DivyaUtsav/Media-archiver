@@ -19,9 +19,10 @@ from app.models import (
 )
 from app.schemas import QueueCompleteRequest
 from app.services.storage import resolve_review_destination
+from app.services.enrichment import run_enrichment, run_re_enrichment
+
 
 router = APIRouter(prefix="/queue", tags=["review-queue"])
-
 
 def _require_pending_payload(payload: QueueCompleteRequest, pending_categories: set[str]) -> None:
     missing_fields: list[str] = []
@@ -89,7 +90,11 @@ def get_next_pending_artwork(db: Session = Depends(get_db)) -> dict:
         elif row.tag_category == "artist":
             suggestions["artists"] = row.suggestion or []
         else:
-            suggestions[row.tag_category] = row.suggestion
+            raw = row.suggestion
+            if raw and isinstance(raw, dict) and "value" in raw and "name" not in raw:
+                # Normalize enrichment pipeline suggestions to use "name"
+                raw = {**raw, "name": raw["value"]}
+            suggestions[row.tag_category] = raw
 
     character_rows = db.execute(
         select(Character.id, Character.name, ArtworkCharacter.confidence, ArtworkCharacter.is_manual)
@@ -176,3 +181,13 @@ def complete_pending_artwork(artwork_id: int, payload: QueueCompleteRequest, db:
     db.commit()
     db.refresh(artwork)
     return {"id": artwork.id, "status": artwork.status, "file_path": artwork.file_path, "updated_at": artwork.updated_at}
+
+
+@router.post("/re-enrich")
+def re_enrich_pending(db: Session = Depends(get_db)) -> dict:
+    stats = run_re_enrichment(db)
+    return {
+        "processed": stats["processed"],
+        "resolved": stats["resolved"],
+        "still_pending": stats["still_pending"]
+    }

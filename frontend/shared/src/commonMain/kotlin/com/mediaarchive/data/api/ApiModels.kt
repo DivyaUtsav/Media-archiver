@@ -136,7 +136,7 @@ data class QueueCountDto(@SerialName("count") val count: Int)
 
 @Serializable
 data class TagSuggestionDto(
-    val name: String,
+    val name: String?,
     @SerialName("character_id") val characterId: Int? = null,
     @SerialName("artist_id") val artistId: Int? = null,
     @SerialName("platform_id") val platformId: Int? = null,

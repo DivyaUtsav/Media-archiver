@@ -1,6 +1,6 @@
 [versions]
 kotlin                  = "2.1.0"
-compose-plugin          = "1.7.3"
+compose-plugin          = "1.8.0-alpha03"
 ktor                    = "3.1.2"
 coroutines              = "1.9.0"
 serialization           = "1.7.3"

@@ -120,8 +120,8 @@ private fun ReviewArtworkPanel(
         AsyncImage(
             model = AppContainer.apiClient.mediaUrl(artwork.id),
             contentDescription = "Pending artwork",
-            contentScale = ContentScale.FillWidth,
-            modifier = Modifier.fillMaxWidth().heightIn(max = 500.dp),
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp).wrapContentHeight(),
         )
 
         // Platform context
@@ -167,11 +167,15 @@ private fun ReviewArtworkPanel(
                                 SuggestionChip(
                                     onClick = {
                                         if (s.characterId != null) {
-                                            val char = CharacterDto(s.characterId, s.name)
+                                            // Known character — add directly
+                                            val char = CharacterDto(s.characterId, s.name ?: "")
                                             onUpdateEditState(editState.copy(characters = editState.characters + char))
+                                        } else {
+                                            // Unknown character — pre-fill search so user can find or create
+                                            characterQuery = s.name ?: ""
                                         }
                                     },
-                                    label = { Text("${s.name} (${(s.confidence * 100).toInt()}%)") },
+                                    label = { Text("${s.name ?: ""} (${(s.confidence * 100).toInt()}%)") },
                                 )
                             }
                         }
@@ -210,6 +214,21 @@ private fun ReviewArtworkPanel(
                         onSelect = { a -> onUpdateEditState(editState.copy(artists = editState.artists + a)); artistQuery = "" },
                         itemLabel = { it.name },
                         onCreateNew = { name -> pendingCreateName = name; showCreateArtistDialog = true },
+                    )
+                }
+            }
+
+            // ── Source Platform ───────────────────────────────────────────────
+            if ("source_platform" in pendingCategories) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SectionHeader(
+                        "Publication Platform",
+                        editState.publicationPlatformSuggestion?.let { "Suggested: ${it.name}" },
+                    )
+                    SourcePlatformSelector(
+                        selected = editState.publicationPlatform,
+                        api = api,
+                        onSelected = { onUpdateEditState(editState.copy(publicationPlatform = it)) },
                     )
                 }
             }
@@ -276,12 +295,48 @@ private fun CreateCharacterDialog(
     var seriesQuery by remember { mutableStateOf("") }
     var seriesResults by remember { mutableStateOf<List<SeriesDto>>(emptyList()) }
     var selectedSeries by remember { mutableStateOf<SeriesDto?>(null) }
+    var showCreateSeriesDialog by remember { mutableStateOf(false) }
+    var isCreatingSeries by remember { mutableStateOf(false) }
 
     LaunchedEffect(seriesQuery) {
         if (seriesQuery.length >= 1)
             runCatching { api.getSeries() }.onSuccess {
-                seriesResults = it.items.filter { s -> s.name.contains(seriesQuery, ignoreCase = true) }
+                seriesResults = it.items.filter { s -> (s.name ?: "").contains(seriesQuery, ignoreCase = true) }
             }
+        else seriesResults = emptyList()
+    }
+
+    if (showCreateSeriesDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreateSeriesDialog = false },
+            title = { Text("Create Series") },
+            text = { Text("Create series \"$seriesQuery\"?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val nameToCreate = seriesQuery
+                        isCreatingSeries = true
+                        showCreateSeriesDialog = false
+                    },
+                    enabled = !isCreatingSeries,
+                ) { Text("Create") }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showCreateSeriesDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    // Series creation side effect
+    LaunchedEffect(isCreatingSeries) {
+        if (isCreatingSeries) {
+            runCatching { api.createSeries(seriesQuery) }.onSuccess { newSeries ->
+                selectedSeries = newSeries
+                seriesQuery = newSeries.name ?: ""
+                seriesResults = emptyList()
+            }
+            isCreatingSeries = false
+        }
     }
 
     AlertDialog(
@@ -289,24 +344,41 @@ private fun CreateCharacterDialog(
         title = { Text("Create Character") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Character name") }, singleLine = true)
-                selectedSeries?.let { Text("Series: ${it.name}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary) }
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Character name") },
+                    singleLine = true,
+                )
+                selectedSeries?.let {
+                    Text(
+                        "Series: ${it.name}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
                 SearchableDropdown(
                     label = "Search series…",
                     query = seriesQuery,
-                    onQueryChange = { seriesQuery = it },
+                    onQueryChange = {
+                        seriesQuery = it
+                        if (selectedSeries != null && it != selectedSeries!!.name) selectedSeries = null
+                    },
                     results = seriesResults,
-                    onSelect = { s -> selectedSeries = s; seriesQuery = s.name },
+                    onSelect = { s -> selectedSeries = s; seriesQuery = s.name ?: ""; seriesResults = emptyList() },
                     itemLabel = { it.name },
+                    onCreateNew = { showCreateSeriesDialog = true },  // ← wires up the + Create option
                 )
             }
         },
         confirmButton = {
             Button(
                 onClick = { selectedSeries?.let { onCreate(name, it.id) } },
-                enabled = name.isNotBlank() && selectedSeries != null,
+                enabled = name.isNotBlank() && selectedSeries != null && !isCreatingSeries,
             ) { Text("Create") }
         },
-        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+        },
     )
 }

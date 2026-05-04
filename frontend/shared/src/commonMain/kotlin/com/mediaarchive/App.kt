@@ -5,12 +5,30 @@ import androidx.compose.runtime.remember
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.toRoute
 import com.mediaarchive.data.AppContainer
 import com.mediaarchive.ui.screens.*
 import com.mediaarchive.ui.theme.ArchiveTheme
 import com.mediaarchive.viewmodel.ArtworkDetailViewModel
 import com.mediaarchive.viewmodel.GalleryViewModel
 import com.mediaarchive.viewmodel.ReviewQueueViewModel
+import kotlinx.serialization.Serializable
+
+// ── Type-safe route destinations ────────────────────────────────────────────
+
+@Serializable
+object GalleryRoute
+
+@Serializable
+data class DetailRoute(val artworkId: Int)
+
+@Serializable
+object QueueRoute
+
+@Serializable
+object SettingsRoute
+
+// ── App entry point ──────────────────────────────────────────────────────────
 
 @Composable
 fun App() {
@@ -18,30 +36,30 @@ fun App() {
         val navController = rememberNavController()
         val api = AppContainer.apiClient
 
-        NavHost(navController = navController, startDestination = "gallery") {
+        NavHost(navController = navController, startDestination = GalleryRoute) {
 
-            composable("gallery") {
+            composable<GalleryRoute> {
                 val vm = remember { GalleryViewModel(api) }
                 GalleryScreen(
                     viewModel = vm,
-                    onArtworkClick = { id -> navController.navigate("detail/$id") },
-                    onQueueClick = { navController.navigate("queue") },
-                    onSettingsClick = { navController.navigate("settings") },
+                    onArtworkClick = { id -> navController.navigate(DetailRoute(id)) },
+                    onQueueClick = { navController.navigate(QueueRoute) },
+                    onSettingsClick = { navController.navigate(SettingsRoute) },
                 )
             }
 
-            composable("detail/{artworkId}") { backStack ->
-                val id = backStack.arguments?.get("artworkId")?.toString()?.toIntOrNull() ?: return@composable
-                val vm = remember(id) { ArtworkDetailViewModel(api, id) }
+            composable<DetailRoute> { backStack ->
+                val route: DetailRoute = backStack.toRoute()
+                val vm = remember(route.artworkId) { ArtworkDetailViewModel(api, route.artworkId) }
                 ArtworkDetailScreen(viewModel = vm, onBack = { navController.popBackStack() })
             }
 
-            composable("queue") {
+            composable<QueueRoute> {
                 val vm = remember { ReviewQueueViewModel(api) }
                 ReviewQueueScreen(viewModel = vm, onBack = { navController.popBackStack() })
             }
 
-            composable("settings") {
+            composable<SettingsRoute> {
                 SettingsScreen(onBack = { navController.popBackStack() })
             }
         }

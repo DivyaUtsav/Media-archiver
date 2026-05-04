@@ -70,7 +70,8 @@ def run_ingestion(db: Session, adapter: IngestionAdapter) -> IngestionStats:
 
         source_platform = ensure_source_platform(db, item.source_platform_name or settings.default_source_platform)
         destination = settings.handoff_root / item.file_path.name
-        shutil.copy2(item.file_path, destination)
+        if item.file_path.resolve() != destination.resolve():
+            shutil.copy2(item.file_path, destination)
         sidecar = destination.with_suffix(f"{destination.suffix}.json")
         write_sidecar(sidecar, item)
 

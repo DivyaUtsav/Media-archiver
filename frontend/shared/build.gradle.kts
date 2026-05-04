@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.android.library)
 }
 
+
 kotlin {
     jvm("desktop")
 
@@ -13,6 +14,11 @@ kotlin {
         compilations.all {
             kotlinOptions { jvmTarget = "17" }
         }
+    }
+
+    @OptIn(org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi::class)
+    compilerOptions {
+        freeCompilerArgs.add("-Xexpect-actual-classes")
     }
 
     sourceSets {

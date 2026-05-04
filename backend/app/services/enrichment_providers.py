@@ -81,24 +81,25 @@ class OllamaTextExtractionProvider:
         raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
         parsed = json.loads(raw)
         return TextExtractionResult(
-            characters=list(parsed.get("characters") or []),
-            artists=list(parsed.get("artists") or []),
+            characters=[c if isinstance(c, str) else c.get("name", "") for c in list(parsed.get("characters") or [])],
+            artists=[a if isinstance(a, str) else a.get("name", "") for a in list(parsed.get("artists") or [])],
             source_platform=parsed.get("source_platform"),
         )
 
 
 class HuggingFaceContentRatingProvider:
-    def classify(self, image_path: Path, subreddit_is_nsfw: bool) -> ContentRatingResult:
+    def __init__(self):
         from transformers import pipeline
+        self._classifier = pipeline("image-classification", model=settings.huggingface_model)
 
-        classifier = pipeline("image-classification", model=settings.huggingface_model)
-        predictions = classifier(str(image_path))
+    def classify(self, image_path: Path, subreddit_is_nsfw: bool) -> ContentRatingResult:
+        predictions = self._classifier(str(image_path))
         safe_score = 0.0
         nsfw_score = 0.0
         for row in predictions:
             label = str(row.get("label", "")).lower()
             score = float(row.get("score", 0.0))
-            if "safe" in label:
+            if "normal" in label or "safe" in label:
                 safe_score = max(safe_score, score)
             if "nsfw" in label:
                 nsfw_score = max(nsfw_score, score)
@@ -116,8 +117,11 @@ class HuggingFaceContentRatingProvider:
 class OllamaArtTypeProvider:
     def classify(self, image_path: Path) -> ArtTypeResult:
         prompt = (
-            "Classify this fanart image into one category: Artwork, Cosplay, or AI Generated. "
-            "Return JSON only: {\"art_type\":\"...\",\"confidence\":0.0}"
+            "You are classifying a fanart image. Choose exactly one: "
+            "Artwork (drawn/illustrated), Cosplay (real photo of person in costume), "
+            "AI Generated (synthetic AI image). "
+            "Respond with ONLY this JSON no other text: "
+            "{\"art_type\": \"Artwork\", \"confidence\": 0.95}"
         )
         encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
         response = requests.post(

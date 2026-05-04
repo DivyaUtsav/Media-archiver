@@ -67,8 +67,8 @@ fun ArtworkDetailScreen(
                         AsyncImage(
                             model = AppContainer.apiClient.mediaUrl(artwork.id),
                             contentDescription = "Artwork",
-                            contentScale = ContentScale.FillWidth,
-                            modifier = Modifier.fillMaxWidth().heightIn(max = 600.dp),
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 600.dp).wrapContentHeight(),
                         )
 
                         Column(
@@ -157,7 +157,7 @@ private fun EditPanel(
     var characterQuery by remember { mutableStateOf("") }
     var characterResults by remember { mutableStateOf<List<CharacterTagDto>>(emptyList()) }
     var artistQuery by remember { mutableStateOf("") }
-    var artistResults by remember { mutableStateOf<List<ArtistDto>>(emptyList()) }
+    var artistResults by remember { mutableStateOf<List<ArtistTagDto>>(emptyList()) }
 
     LaunchedEffect(characterQuery) {
         if (characterQuery.length >= 2) {
@@ -218,6 +218,14 @@ private fun EditPanel(
             results = artistResults,
             onSelect = { a -> onUpdate(editState.copy(artists = editState.artists + a)); artistQuery = "" },
             itemLabel = { it.name },
+        )
+
+        // Publication platform
+        Text("Publication Platform", style = MaterialTheme.typography.labelMedium, color = OnSurfaceMuted)
+        SourcePlatformSelector(
+            selected = editState.publicationPlatform,
+            api = api,
+            onSelected = { onUpdate(editState.copy(publicationPlatform = it)) },
         )
 
         saveError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }

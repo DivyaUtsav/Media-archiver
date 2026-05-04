@@ -2,8 +2,14 @@
 /backend/ingestion_work
 backend/.env
 /backend/app/__pycache__
+*.pyc
+/backend/handoff
+
+# Frontend (KMP/Gradle)
 /frontend/.idea
 /frontend/.gradle
-/backend/app/services/__pycache__
-/backend/app/services/__pycache__
-/backend/handoff
+/frontend/build
+/frontend/*/build
+/frontend/local.properties
+/frontend/.gradle
+*.pyc
