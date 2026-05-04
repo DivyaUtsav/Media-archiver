@@ -99,7 +99,7 @@ fun ArtworkDetailScreen(
                 state.artwork != null -> {
                     val artwork = state.artwork!!
                     Column(
-                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding(),
                     ) {
                         // Hero image box with navigation arrows
                         Box(modifier = Modifier.fillMaxWidth().heightIn(max = 600.dp)) {

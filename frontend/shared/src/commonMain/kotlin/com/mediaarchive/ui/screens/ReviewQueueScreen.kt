@@ -116,7 +116,7 @@ private fun ReviewArtworkPanel(
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding(),
     ) {
         // Image
         AsyncImage(

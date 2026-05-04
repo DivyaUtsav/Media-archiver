@@ -1,8 +1,10 @@
 package com.mediaarchive.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -46,7 +48,7 @@ actual fun FilterContainer(
             BadgedBox(badge = {
                 if (activeFilterCount > 0) Badge { Text("$activeFilterCount") }
             }) {
-                Icon(Icons.Default.FilterList, contentDescription = "Filters")
+                Icon(Icons.Default.Menu, contentDescription = "Filters")
             }
         }
     }
@@ -56,7 +58,7 @@ actual fun FilterContainer(
             onDismissRequest = { showSheet = false },
             sheetState = sheetState,
         ) {
-            Column(modifier = Modifier.padding(16.dp).navigationBarsPadding()) {
+            Column(modifier = Modifier.padding(16.dp).navigationBarsPadding().verticalScroll(rememberScrollState())) {
                 // Reuse the shared desktop filter panel content
                 com.mediaarchive.ui.FilterPanelContent(
                     filters = filters,
