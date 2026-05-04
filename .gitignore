@@ -1,0 +1,9 @@
+/backend/archive
+/backend/ingestion_work
+backend/.env
+/backend/app/__pycache__
+/frontend/.idea
+/frontend/.gradle
+/backend/app/services/__pycache__
+/backend/app/services/__pycache__
+/backend/handoff
