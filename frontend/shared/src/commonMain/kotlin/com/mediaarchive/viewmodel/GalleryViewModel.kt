@@ -26,6 +26,10 @@ data class GalleryState(
     val availableSeries: List<SeriesDto> = emptyList(),
     val queueCount: Int = 0,
     val error: String? = null,
+    val selectionMode: Boolean = false,
+    val selectedArtworkIds: Set<Int> = emptySet(),
+    val isBulkUpdating: Boolean = false,
+    val bulkUpdateError: String? = null,
 ) {
     val availableContentRatings = listOf("SFW", "Suggestive", "NSFW")
     val availableArtTypes = listOf("Artwork", "Cosplay", "AI Generated")
@@ -98,5 +102,49 @@ class GalleryViewModel(private val api: ApiClient) : ViewModel() {
     fun updateFilters(filters: GalleryFilters) {
         _state.value = _state.value.copy(filters = filters)
         loadInitial()
+    }
+
+    fun toggleSelectionMode() {
+        val s = _state.value
+        if (s.selectionMode) {
+            _state.value = s.copy(selectionMode = false, selectedArtworkIds = emptySet())
+        } else {
+            _state.value = s.copy(selectionMode = true)
+        }
+    }
+
+    fun toggleSelection(artworkId: Int) {
+        val s = _state.value
+        if (!s.selectionMode) return
+        val newSet = if (s.selectedArtworkIds.contains(artworkId)) {
+            s.selectedArtworkIds - artworkId
+        } else {
+            s.selectedArtworkIds + artworkId
+        }
+        _state.value = s.copy(selectedArtworkIds = newSet)
+        if (newSet.isEmpty()) toggleSelectionMode()
+    }
+
+    fun selectAll() {
+        val s = _state.value
+        _state.value = s.copy(selectedArtworkIds = s.artworks.map { it.id }.toSet())
+    }
+
+    fun clearSelection() {
+        _state.value = _state.value.copy(selectedArtworkIds = emptySet(), selectionMode = false)
+    }
+
+    fun bulkUpdateTags(request: com.mediaarchive.data.api.ArtworkBulkPatchRequest, onSuccess: () -> Unit) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isBulkUpdating = true, bulkUpdateError = null)
+            try {
+                api.bulkUpdateTags(request)
+                _state.value = _state.value.copy(isBulkUpdating = false, selectionMode = false, selectedArtworkIds = emptySet())
+                loadInitial()
+                onSuccess()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(isBulkUpdating = false, bulkUpdateError = e.message)
+            }
+        }
     }
 }

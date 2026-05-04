@@ -11,6 +11,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import coil3.compose.AsyncImage
 import com.mediaarchive.data.AppContainer
 import com.mediaarchive.data.api.*
@@ -124,13 +126,25 @@ private fun ReviewArtworkPanel(
             modifier = Modifier.fillMaxWidth().heightIn(max = 480.dp).wrapContentHeight(),
         )
 
-        // Platform context
-        artwork.platformContext?.let { ctx ->
-            Surface(tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    if (ctx.subreddit != null) Text("r/${ctx.subreddit}", style = MaterialTheme.typography.labelMedium)
-                    if (ctx.title != null) Text(ctx.title, style = MaterialTheme.typography.bodySmall, color = OnSurfaceMuted)
-                    if (ctx.flair != null) Text(ctx.flair, style = MaterialTheme.typography.labelSmall, color = OnSurfaceMuted)
+        // Platform context & Source URL
+        val uriHandler = LocalUriHandler.current
+        Surface(tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.padding(12.dp).fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    artwork.platformContext?.let { ctx ->
+                        if (ctx.subreddit != null) Text("r/${ctx.subreddit}", style = MaterialTheme.typography.labelMedium)
+                        if (ctx.title != null) Text(ctx.title, style = MaterialTheme.typography.bodySmall, color = OnSurfaceMuted)
+                        if (ctx.flair != null) Text(ctx.flair, style = MaterialTheme.typography.labelSmall, color = OnSurfaceMuted)
+                    }
+                }
+                if (artwork.sourceUrl.isNotBlank()) {
+                    IconButton(onClick = { uriHandler.openUri(artwork.sourceUrl) }) {
+                        Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = "View Original Post")
+                    }
                 }
             }
         }
@@ -282,103 +296,4 @@ private fun SectionHeader(title: String, hint: String?) {
         Text(title, style = MaterialTheme.typography.titleSmall)
         hint?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = OnSurfaceMuted) }
     }
-}
-
-@Composable
-private fun CreateCharacterDialog(
-    initialName: String,
-    api: ApiClient,
-    onCreate: (String, Int) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var name by remember { mutableStateOf(initialName) }
-    var seriesQuery by remember { mutableStateOf("") }
-    var seriesResults by remember { mutableStateOf<List<SeriesDto>>(emptyList()) }
-    var selectedSeries by remember { mutableStateOf<SeriesDto?>(null) }
-    var showCreateSeriesDialog by remember { mutableStateOf(false) }
-    var isCreatingSeries by remember { mutableStateOf(false) }
-
-    LaunchedEffect(seriesQuery) {
-        if (seriesQuery.length >= 1)
-            runCatching { api.getSeries() }.onSuccess {
-                seriesResults = it.items.filter { s -> (s.name ?: "").contains(seriesQuery, ignoreCase = true) }
-            }
-        else seriesResults = emptyList()
-    }
-
-    if (showCreateSeriesDialog) {
-        AlertDialog(
-            onDismissRequest = { showCreateSeriesDialog = false },
-            title = { Text("Create Series") },
-            text = { Text("Create series \"$seriesQuery\"?") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val nameToCreate = seriesQuery
-                        isCreatingSeries = true
-                        showCreateSeriesDialog = false
-                    },
-                    enabled = !isCreatingSeries,
-                ) { Text("Create") }
-            },
-            dismissButton = {
-                OutlinedButton(onClick = { showCreateSeriesDialog = false }) { Text("Cancel") }
-            },
-        )
-    }
-
-    // Series creation side effect
-    LaunchedEffect(isCreatingSeries) {
-        if (isCreatingSeries) {
-            runCatching { api.createSeries(seriesQuery) }.onSuccess { newSeries ->
-                selectedSeries = newSeries
-                seriesQuery = newSeries.name ?: ""
-                seriesResults = emptyList()
-            }
-            isCreatingSeries = false
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Create Character") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Character name") },
-                    singleLine = true,
-                )
-                selectedSeries?.let {
-                    Text(
-                        "Series: ${it.name}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-                SearchableDropdown(
-                    label = "Search series…",
-                    query = seriesQuery,
-                    onQueryChange = {
-                        seriesQuery = it
-                        if (selectedSeries != null && it != selectedSeries!!.name) selectedSeries = null
-                    },
-                    results = seriesResults,
-                    onSelect = { s -> selectedSeries = s; seriesQuery = s.name ?: ""; seriesResults = emptyList() },
-                    itemLabel = { it.name },
-                    onCreateNew = { showCreateSeriesDialog = true },  // ← wires up the + Create option
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { selectedSeries?.let { onCreate(name, it.id) } },
-                enabled = name.isNotBlank() && selectedSeries != null && !isCreatingSeries,
-            ) { Text("Create") }
-        },
-        dismissButton = {
-            OutlinedButton(onClick = onDismiss) { Text("Cancel") }
-        },
-    )
 }

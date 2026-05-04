@@ -20,14 +20,37 @@ import com.mediaarchive.ui.theme.OnSurfaceMuted
 import com.mediaarchive.ui.theme.Surface700
 import com.mediaarchive.viewmodel.ArtworkDetailViewModel
 import com.mediaarchive.viewmodel.TagEditState
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ArtworkDetailScreen(
     viewModel: ArtworkDetailViewModel,
+    galleryViewModel: com.mediaarchive.viewmodel.GalleryViewModel,
     onBack: () -> Unit,
+    onNavigate: (Int) -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
+    val galleryState by galleryViewModel.state.collectAsState()
+
+    val currentIndex = galleryState.artworks.indexOfFirst { it.id == state.artwork?.id }
+    val prevId = if (currentIndex > 0) galleryState.artworks[currentIndex - 1].id else null
+    val nextId = if (currentIndex != -1 && currentIndex < galleryState.artworks.size - 1) galleryState.artworks[currentIndex + 1].id else null
+
+    LaunchedEffect(currentIndex, galleryState.artworks.size) {
+        if (currentIndex != -1 && currentIndex >= galleryState.artworks.size - 4) {
+            galleryViewModel.loadMore()
+        }
+    }
+
+    var dragOffset by remember { mutableStateOf(0f) }
 
     Scaffold(
         topBar = {
@@ -49,7 +72,22 @@ fun ArtworkDetailScreen(
             )
         },
     ) { padding ->
-        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+        Box(modifier = Modifier
+            .padding(padding)
+            .fillMaxSize()
+            .pointerInput(prevId, nextId) {
+                detectHorizontalDragGestures(
+                    onDragStart = { dragOffset = 0f },
+                    onDragEnd = {
+                        if (dragOffset > 50 && prevId != null) onNavigate(prevId)
+                        else if (dragOffset < -50 && nextId != null) onNavigate(nextId)
+                    },
+                    onHorizontalDrag = { change, dragAmount ->
+                        dragOffset += dragAmount
+                    }
+                )
+            }
+        ) {
             when {
                 state.isLoading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
                 state.error != null -> {
@@ -63,13 +101,41 @@ fun ArtworkDetailScreen(
                     Column(
                         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                     ) {
-                        // Hero image
-                        AsyncImage(
-                            model = AppContainer.apiClient.mediaUrl(artwork.id),
-                            contentDescription = "Artwork",
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxWidth().heightIn(max = 600.dp).wrapContentHeight(),
-                        )
+                        // Hero image box with navigation arrows
+                        Box(modifier = Modifier.fillMaxWidth().heightIn(max = 600.dp)) {
+                            AsyncImage(
+                                model = AppContainer.apiClient.mediaUrl(artwork.id),
+                                contentDescription = "Artwork",
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                            
+                            if (prevId != null) {
+                                IconButton(
+                                    onClick = { onNavigate(prevId) },
+                                    modifier = Modifier
+                                        .align(Alignment.CenterStart)
+                                        .padding(8.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Black.copy(alpha = 0.5f))
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous", tint = Color.White)
+                                }
+                            }
+
+                            if (nextId != null) {
+                                IconButton(
+                                    onClick = { onNavigate(nextId) },
+                                    modifier = Modifier
+                                        .align(Alignment.CenterEnd)
+                                        .padding(8.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Black.copy(alpha = 0.5f))
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next", tint = Color.White)
+                                }
+                            }
+                        }
 
                         Column(
                             modifier = Modifier.padding(16.dp),
@@ -84,6 +150,8 @@ fun ArtworkDetailScreen(
                                     onCancel = viewModel::cancelEditing,
                                     isSaving = state.isSaving,
                                     saveError = state.saveError,
+                                    onCreateCharacter = viewModel::createAndAddCharacter,
+                                    onCreateArtist = viewModel::createAndAddArtist,
                                 )
                             } else {
                                 ReadOnlyTagPanel(artwork)
@@ -153,11 +221,16 @@ private fun EditPanel(
     onCancel: () -> Unit,
     isSaving: Boolean,
     saveError: String?,
+    onCreateCharacter: (String, Int) -> Unit,
+    onCreateArtist: (String) -> Unit,
 ) {
     var characterQuery by remember { mutableStateOf("") }
     var characterResults by remember { mutableStateOf<List<CharacterTagDto>>(emptyList()) }
     var artistQuery by remember { mutableStateOf("") }
     var artistResults by remember { mutableStateOf<List<ArtistTagDto>>(emptyList()) }
+    var showCreateCharacterDialog by remember { mutableStateOf(false) }
+    var showCreateArtistDialog by remember { mutableStateOf(false) }
+    var pendingCreateName by remember { mutableStateOf("") }
 
     LaunchedEffect(characterQuery) {
         if (characterQuery.length >= 2) {
@@ -202,6 +275,7 @@ private fun EditPanel(
             results = characterResults,
             onSelect = { c -> onUpdate(editState.copy(characters = editState.characters + c)); characterQuery = "" },
             itemLabel = { "${it.name} · ${it.series.name}" },
+            onCreateNew = { name -> pendingCreateName = name; showCreateCharacterDialog = true },
         )
 
         // Artists
@@ -218,6 +292,7 @@ private fun EditPanel(
             results = artistResults,
             onSelect = { a -> onUpdate(editState.copy(artists = editState.artists + a)); artistQuery = "" },
             itemLabel = { it.name },
+            onCreateNew = { name -> pendingCreateName = name; showCreateArtistDialog = true },
         )
 
         // Publication platform
@@ -237,5 +312,32 @@ private fun EditPanel(
                 else Text("Save")
             }
         }
+    }
+
+    if (showCreateCharacterDialog) {
+        CreateCharacterDialog(
+            initialName = pendingCreateName,
+            api = api,
+            onCreate = { name, seriesId ->
+                onCreateCharacter(name, seriesId)
+                showCreateCharacterDialog = false
+            },
+            onDismiss = { showCreateCharacterDialog = false },
+        )
+    }
+
+    if (showCreateArtistDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreateArtistDialog = false },
+            title = { Text("Create Artist") },
+            text = { Text("Create artist \"$pendingCreateName\"?") },
+            confirmButton = {
+                Button(onClick = {
+                    onCreateArtist(pendingCreateName)
+                    showCreateArtistDialog = false
+                }) { Text("Create") }
+            },
+            dismissButton = { OutlinedButton(onClick = { showCreateArtistDialog = false }) { Text("Cancel") } },
+        )
     }
 }

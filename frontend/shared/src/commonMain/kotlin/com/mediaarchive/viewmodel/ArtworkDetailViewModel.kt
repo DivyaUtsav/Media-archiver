@@ -88,4 +88,34 @@ class ArtworkDetailViewModel(private val api: ApiClient, private val artworkId: 
             }
         }
     }
+
+    fun createAndAddCharacter(name: String, seriesId: Int) {
+        viewModelScope.launch {
+            try {
+                val newChar = api.createCharacter(name, seriesId)
+                val cDto = CharacterTagDto(id = newChar.id, name = newChar.name, series = newChar.series!!, confidence = null, isManual = true)
+                val edit = _state.value.editState
+                if (edit != null) {
+                    _state.value = _state.value.copy(editState = edit.copy(characters = edit.characters + cDto))
+                }
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(saveError = e.message)
+            }
+        }
+    }
+
+    fun createAndAddArtist(name: String) {
+        viewModelScope.launch {
+            try {
+                val newArtist = api.createArtist(name)
+                val aDto = ArtistTagDto(id = newArtist.id, name = newArtist.name, confidence = null, isManual = true)
+                val edit = _state.value.editState
+                if (edit != null) {
+                    _state.value = _state.value.copy(editState = edit.copy(artists = edit.artists + aDto))
+                }
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(saveError = e.message)
+            }
+        }
+    }
 }

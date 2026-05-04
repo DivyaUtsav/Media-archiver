@@ -44,36 +44,65 @@ fun GalleryScreen(
         availableContentRatings = state.availableContentRatings,
         availableArtTypes = state.availableArtTypes,
     ) {
+        var showBulkEditDialog by remember { mutableStateOf(false) }
+
         Scaffold(
             topBar = {
-                TopAppBar(
-                    title = { Text("Archive", style = MaterialTheme.typography.titleLarge) },
-                    actions = {
-                        // Queue badge
-                        IconButton(onClick = onQueueClick) {
-                            BadgedBox(badge = {
-                                if (state.queueCount > 0) Badge {
-                                    Text("${state.queueCount}")
-                                }
-                            }) {
-                                Icon(
-                                    Icons.Default.CheckCircle,
-                                    contentDescription = "Review Queue (${state.queueCount})",
-                                    tint = if (state.queueCount > 0) RatingNSFW else AccentTeal,
-                                )
+                if (state.selectionMode) {
+                    TopAppBar(
+                        title = { Text("${state.selectedArtworkIds.size} selected") },
+                        navigationIcon = {
+                            IconButton(onClick = viewModel::clearSelection) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Clear") // Using refresh as a clear icon for now
                             }
-                        }
-                        IconButton(onClick = viewModel::loadInitial) {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-                        }
-                        IconButton(onClick = onSettingsClick) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                    ),
-                )
+                        },
+                        actions = {
+                            IconButton(onClick = viewModel::selectAll) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = "Select All")
+                            }
+                            Button(
+                                onClick = { showBulkEditDialog = true },
+                                enabled = state.selectedArtworkIds.isNotEmpty(),
+                                modifier = Modifier.padding(end = 8.dp)
+                            ) {
+                                Text("Edit Tags")
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        ),
+                    )
+                } else {
+                    TopAppBar(
+                        title = { Text("Archive", style = MaterialTheme.typography.titleLarge) },
+                        actions = {
+                            // Queue badge
+                            IconButton(onClick = onQueueClick) {
+                                BadgedBox(badge = {
+                                    if (state.queueCount > 0) Badge {
+                                        Text("${state.queueCount}")
+                                    }
+                                }) {
+                                    Icon(
+                                        Icons.Default.CheckCircle,
+                                        contentDescription = "Review Queue (${state.queueCount})",
+                                        tint = if (state.queueCount > 0) RatingNSFW else AccentTeal,
+                                    )
+                                }
+                            }
+                            IconButton(onClick = viewModel::loadInitial) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                            }
+                            IconButton(onClick = onSettingsClick) {
+                                Icon(Icons.Default.Settings, contentDescription = "Settings")
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                        ),
+                    )
+                }
             },
         ) { padding ->
             Box(modifier = Modifier.padding(padding).fillMaxSize()) {
@@ -113,7 +142,15 @@ fun GalleryScreen(
                                 ArtworkCard(
                                     artwork = artwork,
                                     mediaUrl = AppContainer.apiClient.mediaUrl(artwork.id),
-                                    onClick = { onArtworkClick(artwork.id) },
+                                    onClick = {
+                                        if (state.selectionMode) viewModel.toggleSelection(artwork.id)
+                                        else onArtworkClick(artwork.id)
+                                    },
+                                    onLongClick = {
+                                        if (!state.selectionMode) viewModel.toggleSelectionMode()
+                                        viewModel.toggleSelection(artwork.id)
+                                    },
+                                    isSelected = state.selectedArtworkIds.contains(artwork.id)
                                 )
                             }
                             if (state.isLoadingMore) {
@@ -127,6 +164,123 @@ fun GalleryScreen(
                     }
                 }
             }
+
+            if (showBulkEditDialog) {
+                BulkEditDialog(
+                    onDismiss = { showBulkEditDialog = false },
+                    onConfirm = { request ->
+                        viewModel.bulkUpdateTags(
+                            request.copy(artworkIds = state.selectedArtworkIds.toList()),
+                            onSuccess = { showBulkEditDialog = false }
+                        )
+                    },
+                    isSaving = state.isBulkUpdating,
+                    saveError = state.bulkUpdateError
+                )
+            }
         }
     }
+}
+
+@Composable
+fun BulkEditDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (com.mediaarchive.data.api.ArtworkBulkPatchRequest) -> Unit,
+    isSaving: Boolean,
+    saveError: String?,
+) {
+    var contentRating by remember { mutableStateOf<String?>(null) }
+    var artType by remember { mutableStateOf<String?>(null) }
+    var characterQuery by remember { mutableStateOf("") }
+    var characterResults by remember { mutableStateOf<List<com.mediaarchive.data.api.CharacterTagDto>>(emptyList()) }
+    var artistQuery by remember { mutableStateOf("") }
+    var artistResults by remember { mutableStateOf<List<com.mediaarchive.data.api.ArtistTagDto>>(emptyList()) }
+    var characters by remember { mutableStateOf<List<com.mediaarchive.data.api.CharacterTagDto>>(emptyList()) }
+    var artists by remember { mutableStateOf<List<com.mediaarchive.data.api.ArtistTagDto>>(emptyList()) }
+
+    val api = AppContainer.apiClient
+
+    LaunchedEffect(characterQuery) {
+        if (characterQuery.length >= 2) {
+            runCatching { api.searchCharacters(characterQuery) }.onSuccess {
+                characterResults = it.items.map { c ->
+                    com.mediaarchive.data.api.CharacterTagDto(id = c.id, name = c.name, series = c.series ?: com.mediaarchive.data.api.SeriesDto(0, "Unknown"), confidence = null, isManual = true)
+                }
+            }
+        } else characterResults = emptyList()
+    }
+
+    LaunchedEffect(artistQuery) {
+        if (artistQuery.length >= 2) {
+            runCatching { api.searchArtists(artistQuery) }.onSuccess {
+                artistResults = it.items.map { a -> com.mediaarchive.data.api.ArtistTagDto(id = a.id, name = a.name, confidence = null, isManual = true) }
+            }
+        } else artistResults = emptyList()
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!isSaving) onDismiss() },
+        title = { Text("Bulk Edit Tags") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text("Select tags to apply to all selected artworks.", style = MaterialTheme.typography.bodyMedium)
+
+                // Rating
+                com.mediaarchive.ui.components.RatingSelector(selected = contentRating, onSelected = { contentRating = it })
+                
+                // Art Type
+                com.mediaarchive.ui.components.ArtTypeSelector(selected = artType, onSelected = { artType = it })
+
+                // Characters
+                com.mediaarchive.ui.components.SearchableDropdown(
+                    label = "Add character...",
+                    query = characterQuery,
+                    onQueryChange = { characterQuery = it },
+                    results = characterResults,
+                    onSelect = { c -> characters = characters + c; characterQuery = "" },
+                    itemLabel = { "${it.name} · ${it.series.name}" }
+                )
+                if (characters.isNotEmpty()) {
+                    Text("Characters to add: ${characters.joinToString { it.name }}", style = MaterialTheme.typography.labelSmall)
+                }
+
+                // Artists
+                com.mediaarchive.ui.components.SearchableDropdown(
+                    label = "Add artist...",
+                    query = artistQuery,
+                    onQueryChange = { artistQuery = it },
+                    results = artistResults,
+                    onSelect = { a -> artists = artists + a; artistQuery = "" },
+                    itemLabel = { it.name }
+                )
+                if (artists.isNotEmpty()) {
+                    Text("Artists to add: ${artists.joinToString { it.name }}", style = MaterialTheme.typography.labelSmall)
+                }
+
+                saveError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onConfirm(com.mediaarchive.data.api.ArtworkBulkPatchRequest(
+                        artworkIds = emptyList(), // Filled by caller
+                        contentRating = contentRating,
+                        artType = artType,
+                        characters = if (characters.isNotEmpty()) characters.map { it.id } else null,
+                        artists = if (artists.isNotEmpty()) artists.map { it.id } else null,
+                    ))
+                },
+                enabled = !isSaving && (contentRating != null || artType != null || characters.isNotEmpty() || artists.isNotEmpty())
+            ) {
+                if (isSaving) CircularProgressIndicator(modifier = Modifier.size(16.dp)) else Text("Apply")
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss, enabled = !isSaving) { Text("Cancel") }
+        }
+    )
 }

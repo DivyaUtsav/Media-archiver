@@ -48,6 +48,13 @@ class ApiClient(private val baseUrl: () -> String) {
             setBody(request)
         }.body()
 
+    suspend fun bulkUpdateTags(request: ArtworkBulkPatchRequest): Unit {
+        client.patch("${baseUrl()}/artworks/bulk") {
+            contentType(ContentType.Application.Json)
+            setBody(request)
+        }
+    }
+
     /** Full URL for media — used directly by Coil. */
     fun mediaUrl(artworkId: Int): String = "${baseUrl()}/artworks/$artworkId/media"
 

@@ -2,6 +2,7 @@ package com.mediaarchive
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -35,13 +36,13 @@ fun App() {
     ArchiveTheme {
         val navController = rememberNavController()
         val api = AppContainer.apiClient
+        val galleryViewModel = viewModel { GalleryViewModel(api) }
 
         NavHost(navController = navController, startDestination = GalleryRoute) {
 
             composable<GalleryRoute> {
-                val vm = remember { GalleryViewModel(api) }
                 GalleryScreen(
-                    viewModel = vm,
+                    viewModel = galleryViewModel,
                     onArtworkClick = { id -> navController.navigate(DetailRoute(id)) },
                     onQueueClick = { navController.navigate(QueueRoute) },
                     onSettingsClick = { navController.navigate(SettingsRoute) },
@@ -51,7 +52,16 @@ fun App() {
             composable<DetailRoute> { backStack ->
                 val route: DetailRoute = backStack.toRoute()
                 val vm = remember(route.artworkId) { ArtworkDetailViewModel(api, route.artworkId) }
-                ArtworkDetailScreen(viewModel = vm, onBack = { navController.popBackStack() })
+                ArtworkDetailScreen(
+                    viewModel = vm, 
+                    galleryViewModel = galleryViewModel,
+                    onBack = { navController.popBackStack() },
+                    onNavigate = { newId ->
+                        navController.navigate(DetailRoute(newId)) {
+                            popUpTo<DetailRoute> { inclusive = true }
+                        }
+                    }
+                )
             }
 
             composable<QueueRoute> {

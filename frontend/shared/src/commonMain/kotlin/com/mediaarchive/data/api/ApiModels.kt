@@ -124,6 +124,16 @@ data class UpdateTagsRequest(
 )
 
 @Serializable
+data class ArtworkBulkPatchRequest(
+    @SerialName("artwork_ids") val artworkIds: List<Int>,
+    @SerialName("content_rating") val contentRating: String? = null,
+    @SerialName("art_type") val artType: String? = null,
+    val characters: List<Int>? = null,
+    val artists: List<Int>? = null,
+    @SerialName("publication_platform_id") val publicationPlatformId: Int? = null,
+)
+
+@Serializable
 data class UpdateTagsResponse(
     val id: Int,
     @SerialName("updated_at") val updatedAt: String,

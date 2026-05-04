@@ -18,17 +18,28 @@ import coil3.compose.AsyncImage
 import com.mediaarchive.data.api.ArtworkSummaryDto
 import com.mediaarchive.ui.theme.*
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ArtworkCard(
     artwork: ArtworkSummaryDto,
     mediaUrl: String,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+    isSelected: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
             .background(Surface700)
             .aspectRatio(1f),
     ) {
@@ -72,6 +83,25 @@ fun ArtworkCard(
                     color = OnSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+
+        // Selection overlay
+        if (isSelected) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.4f))
+            ) {
+                androidx.compose.material3.Icon(
+                    Icons.Default.CheckCircle,
+                    contentDescription = "Selected",
+                    tint = AccentTeal,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp)
+                        .size(28.dp)
                 )
             }
         }

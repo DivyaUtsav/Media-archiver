@@ -26,6 +26,15 @@ class ArtworkTagPatch(BaseModel):
     publication_platform_id: int | None = None
 
 
+class ArtworkBulkPatch(BaseModel):
+    artwork_ids: list[int]
+    content_rating: str | None = None
+    art_type: str | None = None
+    characters: list[int] | None = None
+    artists: list[int] | None = None
+    publication_platform_id: int | None = None
+
+
 class QueueCompleteRequest(BaseModel):
     characters: list[int] | None = None
     artists: list[int] | None = None

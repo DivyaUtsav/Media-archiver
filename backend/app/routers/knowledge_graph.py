@@ -71,7 +71,7 @@ def list_characters(
         .group_by(Character.id, Series.id)
     )
     if search:
-        stmt = stmt.where(func.lower(Character.name).like(f"{search.lower()}%"))
+        stmt = stmt.where(func.lower(Character.name).like(f"%{search.lower()}%"))
     if series_id:
         stmt = stmt.where(Character.series_id == series_id)
     rows = db.execute(stmt.order_by(Character.name.asc()).limit(limit)).all()
@@ -144,7 +144,7 @@ def list_artists(
         .group_by(Artist.id)
     )
     if search:
-        stmt = stmt.where(func.lower(Artist.name).like(f"{search.lower()}%"))
+        stmt = stmt.where(func.lower(Artist.name).like(f"%{search.lower()}%"))
     rows = db.execute(stmt.order_by(Artist.name.asc()).limit(limit)).all()
     return {
         "items": [

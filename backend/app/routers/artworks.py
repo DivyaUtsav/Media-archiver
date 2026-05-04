@@ -15,7 +15,7 @@ from app.models import (
     Series,
     SourcePlatform,
 )
-from app.schemas import ArtworkListItem, ArtworkListResponse, ArtworkTagPatch, ArtworkDetail, ArtworkTagPatchResponse
+from app.schemas import ArtworkListItem, ArtworkListResponse, ArtworkTagPatch, ArtworkBulkPatch, ArtworkDetail, ArtworkTagPatchResponse
 
 router = APIRouter(prefix="/artworks", tags=["artworks"])
 
@@ -217,3 +217,38 @@ def patch_artwork_tags(artwork_id: int, payload: ArtworkTagPatch, db: Session = 
     db.commit()
     db.refresh(artwork)
     return {"id": artwork.id, "updated_at": artwork.updated_at}
+
+
+@router.patch("/bulk")
+def patch_bulk_artworks(payload: ArtworkBulkPatch, db: Session = Depends(get_db)) -> dict:
+    if not payload.artwork_ids:
+        return {"updated_count": 0}
+
+    artworks = db.execute(select(Artwork).where(Artwork.id.in_(payload.artwork_ids))).scalars().all()
+    if not artworks:
+        return {"updated_count": 0}
+
+    for artwork in artworks:
+        if payload.content_rating is not None:
+            artwork.content_rating = payload.content_rating
+            artwork.content_rating_confidence = None
+            artwork.content_rating_is_manual = True
+        if payload.art_type is not None:
+            artwork.art_type = payload.art_type
+            artwork.art_type_confidence = None
+            artwork.art_type_is_manual = True
+        if payload.publication_platform_id is not None:
+            if payload.publication_platform_id and not db.get(SourcePlatform, payload.publication_platform_id):
+                continue # Skip invalid
+            artwork.publication_platform_id = payload.publication_platform_id
+            artwork.publication_platform_confidence = None
+            artwork.publication_platform_is_manual = True
+        if payload.characters is not None:
+            _replace_artwork_characters(db, artwork.id, payload.characters)
+        if payload.artists is not None:
+            _replace_artwork_artists(db, artwork.id, payload.artists)
+            
+        db.add(artwork)
+
+    db.commit()
+    return {"updated_count": len(artworks)}
