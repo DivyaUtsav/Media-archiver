@@ -14,6 +14,7 @@ expect fun FilterContainer(
     filters: GalleryFilters,
     onFiltersChanged: (GalleryFilters) -> Unit,
     availableSeries: List<SeriesDto>,
+    availableArtists: List<com.mediaarchive.data.api.ArtistDto>,
     availableContentRatings: List<String>,
     availableArtTypes: List<String>,
     content: @Composable () -> Unit,

@@ -51,15 +51,13 @@ fun App() {
 
             composable<DetailRoute> { backStack ->
                 val route: DetailRoute = backStack.toRoute()
-                val vm = remember(route.artworkId) { ArtworkDetailViewModel(api, route.artworkId) }
                 ArtworkDetailScreen(
-                    viewModel = vm, 
+                    initialArtworkId = route.artworkId,
                     galleryViewModel = galleryViewModel,
                     onBack = { navController.popBackStack() },
-                    onNavigate = { newId ->
-                        navController.navigate(DetailRoute(newId)) {
-                            popUpTo<DetailRoute> { inclusive = true }
-                        }
+                    onArtistClick = { artistId ->
+                        galleryViewModel.updateFilters(com.mediaarchive.viewmodel.GalleryFilters(artistIds = listOf(artistId)))
+                        navController.popBackStack()
                     }
                 )
             }

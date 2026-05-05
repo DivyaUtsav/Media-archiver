@@ -2,11 +2,13 @@ import json
 import subprocess
 from pathlib import Path
 
+from sqlalchemy.orm import Session
+
 from app.config import settings
-from app.services.ingestion import IngestionAdapter, IngestionItem
+from app.services.ingestion import IngestionAdapter, IngestionItem, is_duplicate_source
 
 
-class ManifestIngestionAdapter(IngestionAdapter):
+class ManifestIngestionAdapter:
     """
     Local test adapter.
 
@@ -25,38 +27,39 @@ class ManifestIngestionAdapter(IngestionAdapter):
     def __init__(self, manifest_path: Path | None = None):
         self.manifest_path = manifest_path or settings.ingestion_manifest_path
 
-    def fetch_items(self) -> list[IngestionItem]:
+    def fetch_items(self, db: Session, batch_size: int) -> list[IngestionItem]:
         if not self.manifest_path.exists():
             return []
         raw = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         items: list[IngestionItem] = []
         for entry in raw:
-            items.append(
-                IngestionItem(
-                    file_path=Path(entry["file_path"]),
-                    source_url=entry["source_url"],
-                    source_platform_url=entry.get("source_platform_url"),
-                    platform_context=entry.get("platform_context") or {},
-                    source_platform_name=entry.get("source_platform_name") or settings.default_source_platform,
-                )
+            item = IngestionItem(
+                file_path=Path(entry["file_path"]),
+                source_url=entry["source_url"],
+                source_platform_url=entry.get("source_platform_url"),
+                platform_context=entry.get("platform_context") or {},
+                source_platform_name=entry.get("source_platform_name") or settings.default_source_platform,
             )
+            if is_duplicate_source(db, item.source_url):
+                continue
+            items.append(item)
         return items
 
 
-class GalleryDLIngestionAdapter(IngestionAdapter):
+class GalleryDLIngestionAdapter:
     """
-    Gallery-DL adapter scaffold.
+    Generic Gallery-DL adapter scaffold for future platform support.
 
-    This executes a configured gallery-dl command and then reads generated outputs from
-    ingestion_work_dir/gallery_manifest.json in the same schema as ManifestIngestionAdapter.
+    Executes a configured gallery-dl command and reads generated outputs
+    from ingestion_work_dir. Intended as a base for platform-specific adapters.
     """
 
     MEDIA_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff", ".mp4", ".webm"}
 
-    def fetch_items(self) -> list[IngestionItem]:
+    def fetch_items(self, db: Session, batch_size: int) -> list[IngestionItem]:
         settings.ingestion_work_dir.mkdir(parents=True, exist_ok=True)
         self._run_gallery_dl()
-        return self._parse_gallery_outputs()
+        return self._parse_gallery_outputs(db=db, batch_size=batch_size)
 
     def _run_gallery_dl(self) -> None:
         targets = [t.strip() for t in settings.gallery_dl_targets.split(",") if t.strip()]
@@ -67,9 +70,11 @@ class GalleryDLIngestionAdapter(IngestionAdapter):
         command = ["gallery-dl", "--write-metadata", "--dest", str(settings.ingestion_work_dir), *extra_args, *targets]
         subprocess.run(command, check=True, cwd=settings.ingestion_work_dir)
 
-    def _parse_gallery_outputs(self) -> list[IngestionItem]:
+    def _parse_gallery_outputs(self, db: Session, batch_size: int) -> list[IngestionItem]:
         items: list[IngestionItem] = []
         for metadata_path in settings.ingestion_work_dir.rglob("*.json"):
+            if len(items) >= batch_size:
+                break
             metadata = self._read_json(metadata_path)
             if metadata is None:
                 continue
@@ -80,7 +85,9 @@ class GalleryDLIngestionAdapter(IngestionAdapter):
 
             source_url = self._resolve_source_url(metadata)
             if not source_url:
-                # Preserve dedup semantics by requiring a source key.
+                continue
+
+            if is_duplicate_source(db, source_url):
                 continue
 
             items.append(
@@ -90,6 +97,7 @@ class GalleryDLIngestionAdapter(IngestionAdapter):
                     source_platform_url=self._resolve_source_platform_url(metadata),
                     platform_context=self._build_platform_context(metadata),
                     source_platform_name=self._resolve_source_platform_name(metadata),
+                    original_file_path=media_path,
                 )
             )
         return items
@@ -113,7 +121,7 @@ class GalleryDLIngestionAdapter(IngestionAdapter):
         if isinstance(filename, str):
             candidate = Path(filename)
             if not candidate.is_absolute():
-                candidate = metadata_path.parent / candidate
+                candidate = metadata_path.parent / filename
             if candidate.exists() and candidate.suffix.lower() in self.MEDIA_SUFFIXES:
                 return candidate
 
@@ -158,17 +166,23 @@ class GalleryDLIngestionAdapter(IngestionAdapter):
             "subreddit": metadata.get("subreddit"),
             "title": metadata.get("title"),
             "flair": metadata.get("flair") or metadata.get("link_flair_text"),
+            "author": metadata.get("author"),
         }
 
-class TwitterIngestionAdapter(IngestionAdapter):
-    """
-    Twitter/X adapter for bookmarks and likes.
 
-    Expects gallery-dl to have already downloaded media and metadata
-    to ingestion_work_dir using this config:
+class TwitterIngestionAdapter:
+    """
+    Twitter/X adapter supporting bookmarks and likes.
+
+    Runs gallery-dl against configured targets (bookmarks and/or likes URLs),
+    then parses the downloaded files and metadata. Uses database dedup to stop
+    after batch_size new items — does not rely on file presence in ingestion_work.
+
+    Requires gallery-dl config at %APPDATA%/gallery-dl/config.json with:
     {
         "extractor": {
             "twitter": {
+                "cookies": "<path to cookies.txt>",
                 "postprocessors": [{"name": "metadata", "event": "post", "filename": "{tweet_id}.json"}]
             }
         }
@@ -176,52 +190,62 @@ class TwitterIngestionAdapter(IngestionAdapter):
     """
 
     MEDIA_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4", ".webm"}
-    SKIP_SUFFIXES = {".part", ".json"}
 
     def __init__(self, targets: list[str] | None = None, work_dir: Path | None = None):
         self.targets = targets or [t.strip() for t in settings.gallery_dl_targets.split(",") if t.strip()]
         self.work_dir = work_dir or settings.ingestion_work_dir
 
-    def fetch_items(self) -> list[IngestionItem]:
+    def fetch_items(self, db: Session, batch_size: int) -> list[IngestionItem]:
         self.work_dir.mkdir(parents=True, exist_ok=True)
-        self._run_gallery_dl()
-        return self._parse_outputs()
+        self._run_gallery_dl(batch_size=batch_size)
+        return self._parse_outputs(db=db, batch_size=batch_size)
 
-    def _run_gallery_dl(self) -> None:
+    def _run_gallery_dl(self, batch_size: int) -> None:
         if not self.targets:
-            raise ValueError("No Twitter targets configured.")
-        extra_args = [a.strip() for a in settings.gallery_dl_extra_args.split(",") if a.strip()]
-        command = [
-            "gallery-dl",
-            "--dest", str(self.work_dir),
-            "--range", f"1-{settings.ingestion_batch_size}",
-            *extra_args,
-            *self.targets
-        ]
-        subprocess.run(command, check=True)
+            raise ValueError("No Twitter targets configured. Set MEDIA_ARCHIVE_GALLERY_DL_TARGETS.")
 
-    def _parse_outputs(self) -> list[IngestionItem]:
+        cmd = ["gallery-dl", "--dest", str(self.work_dir), "--range", f"1-{batch_size}"]
+
+        # Attach cookies file if configured
+        if settings.gallery_dl_cookies_file:
+            cmd += ["--cookies", settings.gallery_dl_cookies_file]
+
+        extra_args = [a.strip() for a in settings.gallery_dl_extra_args.split(",") if a.strip()]
+        if extra_args:
+            cmd += extra_args
+
+        cmd += self.targets
+        subprocess.run(cmd, check=True)
+
+    def _parse_outputs(self, db: Session, batch_size: int) -> list[IngestionItem]:
         items: list[IngestionItem] = []
         twitter_root = self.work_dir / "twitter"
         if not twitter_root.exists():
             return items
 
-        for author_dir in twitter_root.iterdir():
+        for author_dir in sorted(twitter_root.iterdir()):
             if not author_dir.is_dir():
                 continue
-            author_name = author_dir.name
+            if len(items) >= batch_size:
+                break
 
-            for json_path in author_dir.glob("*.json"):
-                # skip stray info.json from old runs
+            for json_path in sorted(author_dir.glob("*.json"), reverse=True):
+                # Skip stray info.json files from old runs
                 if json_path.stem == "info":
                     continue
+                if len(items) >= batch_size:
+                    break
 
                 tweet_id = json_path.stem
                 metadata = self._read_json(json_path)
                 if not metadata:
                     continue
 
-                # find all media files for this tweet
+                # Always get author from metadata, not folder name.
+                # Folder name is the liker's username for liked tweets — not the real author.
+                real_author = (metadata.get("author") or {}).get("name") or author_dir.name
+                author_url = (metadata.get("author") or {}).get("url", "")
+
                 media_files = sorted([
                     f for f in author_dir.iterdir()
                     if f.stem.startswith(f"{tweet_id}_")
@@ -230,21 +254,29 @@ class TwitterIngestionAdapter(IngestionAdapter):
                 ])
 
                 for media_file in media_files:
-                    # use tweet_id + filename as unique source_url to handle multi-image
-                    source_url = f"https://x.com/{author_name}/status/{tweet_id}/{media_file.name}"
+                    if len(items) >= batch_size:
+                        break
+
+                    # Per-image dedup key — handles multi-image tweets as separate artworks
+                    source_url = f"https://x.com/{real_author}/status/{tweet_id}/{media_file.name}"
+                    if is_duplicate_source(db, source_url):
+                        continue
+
                     items.append(IngestionItem(
                         file_path=media_file,
                         source_url=source_url,
-                        source_platform_url=f"https://x.com/{author_name}/status/{tweet_id}",
+                        source_platform_url=f"https://x.com/{real_author}/status/{tweet_id}",
                         platform_context={
                             "tweet_id": tweet_id,
-                            "author": author_name,
+                            "author": real_author,
                             "content": metadata.get("content", ""),
                             "sensitive": metadata.get("sensitive", False),
-                            "author_url": metadata.get("author", {}).get("url", ""),
+                            "author_url": author_url,
                         },
                         source_platform_name="Twitter",
+                        original_file_path=media_file,
                     ))
+
         return items
 
     @staticmethod
@@ -254,6 +286,7 @@ class TwitterIngestionAdapter(IngestionAdapter):
             return payload if isinstance(payload, dict) else None
         except (json.JSONDecodeError, UnicodeDecodeError):
             return None
+
 
 def get_ingestion_adapter(adapter_name: str) -> IngestionAdapter:
     normalized = adapter_name.strip().lower()

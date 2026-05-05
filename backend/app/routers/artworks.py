@@ -73,6 +73,7 @@ def list_artworks(
     page_size: int = Query(default=50, ge=1, le=200),
     series_id: list[int] | None = Query(default=None),
     character_id: list[int] | None = Query(default=None),
+    artist_id: list[int] | None = Query(default=None),
     content_rating: list[str] | None = Query(default=None),
     art_type: list[str] | None = Query(default=None),
     db: Session = Depends(get_db),
@@ -86,6 +87,8 @@ def list_artworks(
         stmt = stmt.join(Series, Series.id == Character.series_id).where(Series.id.in_(series_id))
     if character_id:
         stmt = stmt.where(Character.id.in_(character_id))
+    if artist_id:
+        stmt = stmt.join(ArtworkArtist, ArtworkArtist.artwork_id == Artwork.id).where(ArtworkArtist.artist_id.in_(artist_id))
     if content_rating:
         stmt = stmt.where(Artwork.content_rating.in_(content_rating))
     if art_type:
@@ -186,6 +189,23 @@ def get_artwork_media(artwork_id: int, db: Session = Depends(get_db)) -> FileRes
         db.commit()
         raise HTTPException(status_code=410, detail="Media file is missing from disk.")
     return FileResponse(media_path)
+
+
+@router.delete("/{artwork_id}")
+def delete_artwork(artwork_id: int, db: Session = Depends(get_db)) -> dict:
+    artwork = db.get(Artwork, artwork_id)
+    if not artwork:
+        raise HTTPException(status_code=404, detail="Artwork not found.")
+    
+    # Delete file from disk
+    file_path = Path(artwork.file_path)
+    if file_path.exists():
+        file_path.unlink()
+    
+    # Delete record
+    db.delete(artwork)
+    db.commit()
+    return {"id": artwork_id, "deleted": True}
 
 
 @router.patch("/{artwork_id}/tags", response_model=ArtworkTagPatchResponse)

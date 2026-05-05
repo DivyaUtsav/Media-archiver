@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 data class GalleryFilters(
     val seriesIds: List<Int> = emptyList(),
     val characterIds: List<Int> = emptyList(),
+    val artistIds: List<Int> = emptyList(),
     val contentRatings: List<String> = emptyList(),
     val artTypes: List<String> = emptyList(),
 )
@@ -24,6 +25,7 @@ data class GalleryState(
     val hasMore: Boolean = true,
     val filters: GalleryFilters = GalleryFilters(),
     val availableSeries: List<SeriesDto> = emptyList(),
+    val availableArtists: List<com.mediaarchive.data.api.ArtistDto> = emptyList(),
     val queueCount: Int = 0,
     val error: String? = null,
     val selectionMode: Boolean = false,
@@ -49,11 +51,13 @@ class GalleryViewModel(private val api: ApiClient) : ViewModel() {
             _state.value = _state.value.copy(isLoading = true, error = null, artworks = emptyList(), currentPage = 1, hasMore = true)
             try {
                 val seriesResult = api.getSeries()
+                val artistResult = api.getArtists()
                 val f = _state.value.filters
                 val page = api.getArtworks(
                     page = 1,
                     seriesIds = f.seriesIds,
                     characterIds = f.characterIds,
+                    artistIds = f.artistIds,
                     contentRatings = f.contentRatings,
                     artTypes = f.artTypes,
                 )
@@ -64,6 +68,7 @@ class GalleryViewModel(private val api: ApiClient) : ViewModel() {
                     currentPage = 1,
                     hasMore = page.items.size < page.total,
                     availableSeries = seriesResult.items,
+                    availableArtists = artistResult.items,
                     queueCount = queueCount.count,
                 )
             } catch (e: Exception) {
@@ -84,6 +89,7 @@ class GalleryViewModel(private val api: ApiClient) : ViewModel() {
                     page = nextPage,
                     seriesIds = f.seriesIds,
                     characterIds = f.characterIds,
+                    artistIds = f.artistIds,
                     contentRatings = f.contentRatings,
                     artTypes = f.artTypes,
                 )
@@ -102,6 +108,11 @@ class GalleryViewModel(private val api: ApiClient) : ViewModel() {
     fun updateFilters(filters: GalleryFilters) {
         _state.value = _state.value.copy(filters = filters)
         loadInitial()
+    }
+
+    fun removeArtwork(id: Int) {
+        val s = _state.value
+        _state.value = s.copy(artworks = s.artworks.filter { it.id != id })
     }
 
     fun toggleSelectionMode() {

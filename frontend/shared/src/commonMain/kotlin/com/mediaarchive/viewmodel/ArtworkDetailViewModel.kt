@@ -118,4 +118,17 @@ class ArtworkDetailViewModel(private val api: ApiClient, private val artworkId: 
             }
         }
     }
+
+    fun deleteArtwork(onSuccess: () -> Unit) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isSaving = true, saveError = null)
+            try {
+                api.deleteArtwork(artworkId)
+                _state.value = _state.value.copy(isSaving = false)
+                onSuccess()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(isSaving = false, saveError = "Failed to delete: ${e.message}")
+            }
+        }
+    }
 }

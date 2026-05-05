@@ -18,6 +18,7 @@ class IngestionItem:
     source_platform_url: str | None
     platform_context: dict
     source_platform_name: str
+    original_file_path: Path | None = None  # tracks source in ingestion_work for cleanup
 
 
 @dataclass
@@ -28,8 +29,12 @@ class IngestionStats:
 
 
 class IngestionAdapter(Protocol):
-    def fetch_items(self) -> list[IngestionItem]:
-        """Fetch new candidate media items from source platforms."""
+    def fetch_items(self, db: Session, batch_size: int) -> list[IngestionItem]:
+        """
+        Fetch up to batch_size new media items from the source platform.
+        Adapters are responsible for dedup checking against the database
+        and stopping once batch_size new items have been found.
+        """
 
 
 def ensure_source_platform(db: Session, name: str) -> SourcePlatform:
@@ -54,6 +59,8 @@ def write_sidecar(sidecar_path: Path, item: IngestionItem) -> None:
         "source_url": item.source_url,
         "source_platform_url": item.source_platform_url,
         "platform_context": item.platform_context,
+        # Track original path in ingestion_work so enrichment can clean it up
+        "original_file_path": str(item.original_file_path) if item.original_file_path else None,
     }
     sidecar_path.write_text(json.dumps(sidecar_payload, indent=2), encoding="utf-8")
 
@@ -62,20 +69,22 @@ def run_ingestion(db: Session, adapter: IngestionAdapter) -> IngestionStats:
     stats = IngestionStats()
     settings.handoff_root.mkdir(parents=True, exist_ok=True)
 
-    for item in adapter.fetch_items():
+    # Adapters handle dedup and batch_size internally — run_ingestion just
+    # processes whatever the adapter returns.
+    for item in adapter.fetch_items(db=db, batch_size=settings.ingestion_batch_size):
         stats.fetched += 1
-        if is_duplicate_source(db, item.source_url):
-            stats.skipped_duplicates += 1
-            continue
 
-        source_platform = ensure_source_platform(db, item.source_platform_name or settings.default_source_platform)
+        source_platform = ensure_source_platform(
+            db, item.source_platform_name or settings.default_source_platform
+        )
+
         destination = settings.handoff_root / item.file_path.name
         if item.file_path.resolve() != destination.resolve():
             shutil.copy2(item.file_path, destination)
+
         sidecar = destination.with_suffix(f"{destination.suffix}.json")
         write_sidecar(sidecar, item)
 
-        # Create initial record for downstream enrichment.
         db.add(
             Artwork(
                 file_path=str(destination),

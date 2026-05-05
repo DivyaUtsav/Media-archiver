@@ -96,7 +96,7 @@ def test_write_sidecar_produces_valid_json(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_manifest_adapter_reads_entries(tmp_path: Path):
+def test_manifest_adapter_reads_entries(tmp_path: Path, db_session: Session):
     media = _make_media(tmp_path)
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
@@ -111,19 +111,19 @@ def test_manifest_adapter_reads_entries(tmp_path: Path):
         encoding="utf-8",
     )
     adapter = ManifestIngestionAdapter(manifest_path=manifest)
-    items = adapter.fetch_items()
+    items = adapter.fetch_items(db=db_session, batch_size=50)
     assert len(items) == 1
     assert items[0].source_url == "https://reddit.com/r/anime/post/m1"
     assert items[0].source_platform_name == "Reddit"
     assert items[0].platform_context["subreddit"] == "anime"
 
 
-def test_manifest_adapter_returns_empty_when_missing(tmp_path: Path):
+def test_manifest_adapter_returns_empty_when_missing(tmp_path: Path, db_session: Session):
     adapter = ManifestIngestionAdapter(manifest_path=tmp_path / "nonexistent.json")
-    assert adapter.fetch_items() == []
+    assert adapter.fetch_items(db=db_session, batch_size=50) == []
 
 
-def test_manifest_adapter_uses_default_platform_when_absent(tmp_path: Path):
+def test_manifest_adapter_uses_default_platform_when_absent(tmp_path: Path, db_session: Session):
     media = _make_media(tmp_path)
     manifest = tmp_path / "manifest.json"
     manifest.write_text(
@@ -132,7 +132,7 @@ def test_manifest_adapter_uses_default_platform_when_absent(tmp_path: Path):
     )
     settings.default_source_platform = "Reddit"
     adapter = ManifestIngestionAdapter(manifest_path=manifest)
-    items = adapter.fetch_items()
+    items = adapter.fetch_items(db=db_session, batch_size=50)
     assert items[0].source_platform_name == "Reddit"
 
 
@@ -189,8 +189,8 @@ def test_run_ingestion_skips_duplicate(db_session: Session, tmp_path: Path):
     adapter = ManifestIngestionAdapter(manifest_path=manifest)
     stats = run_ingestion(db_session, adapter)
 
-    assert stats.fetched == 1
-    assert stats.skipped_duplicates == 1
+    # Adapter handles dedup internally — run_ingestion sees 0 items fetched
+    assert stats.fetched == 0
     assert stats.dropped_to_handoff == 0
 
 

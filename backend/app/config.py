@@ -14,12 +14,13 @@ class Settings(BaseSettings):
     default_source_platform: str = "Reddit"
     gallery_dl_targets: str = ""
     gallery_dl_extra_args: str = ""
+    gallery_dl_cookies_file: str = ""  # path to cookies.txt for gallery-dl auth
     enrichment_text_provider: str = "none"
     enrichment_content_provider: str = "none"
     enrichment_art_type_provider: str = "none"
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_text_model: str = "qwen2.5:7b-instruct-q4_K_M"
-    ollama_vision_model: str = "moondream"
+    ollama_vision_model: str = "llava-phi3"
     huggingface_model: str = "Falconsai/nsfw_image_detection"
     enrichment_strict_providers: bool = False
     provider_startup_checks: bool = True

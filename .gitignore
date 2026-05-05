@@ -13,3 +13,5 @@ backend/.env
 /frontend/local.properties
 /frontend/.gradle
 *.pyc
+/backend/gallery-dl
+/backend/.idea

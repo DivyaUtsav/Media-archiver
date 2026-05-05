@@ -28,6 +28,7 @@ class ApiClient(private val baseUrl: () -> String) {
         pageSize: Int = 50,
         seriesIds: List<Int> = emptyList(),
         characterIds: List<Int> = emptyList(),
+        artistIds: List<Int> = emptyList(),
         contentRatings: List<String> = emptyList(),
         artTypes: List<String> = emptyList(),
     ): ArtworkPageDto = client.get("${baseUrl()}/artworks") {
@@ -35,6 +36,7 @@ class ApiClient(private val baseUrl: () -> String) {
         parameter("page_size", pageSize)
         seriesIds.forEach { parameter("series_id", it) }
         characterIds.forEach { parameter("character_id", it) }
+        artistIds.forEach { parameter("artist_id", it) }
         contentRatings.forEach { parameter("content_rating", it) }
         artTypes.forEach { parameter("art_type", it) }
     }.body()
@@ -55,6 +57,10 @@ class ApiClient(private val baseUrl: () -> String) {
         }
     }
 
+    suspend fun deleteArtwork(id: Int) {
+        client.delete("${baseUrl()}/artworks/$id")
+    }
+
     /** Full URL for media — used directly by Coil. */
     fun mediaUrl(artworkId: Int): String = "${baseUrl()}/artworks/$artworkId/media"
 
@@ -71,6 +77,10 @@ class ApiClient(private val baseUrl: () -> String) {
             contentType(ContentType.Application.Json)
             setBody(request)
         }.body()
+
+    suspend fun deletePendingArtwork(id: Int) {
+        client.delete("${baseUrl()}/queue/$id")
+    }
 
     // ── Knowledge Graph ───────────────────────────────────────────────────────
 
@@ -91,6 +101,11 @@ class ApiClient(private val baseUrl: () -> String) {
         client.get("${baseUrl()}/artists") {
             if (query.isNotBlank()) parameter("search", query)
             parameter("limit", 30)
+        }.body()
+
+    suspend fun getArtists(limit: Int = 100): ArtistListDto =
+        client.get("${baseUrl()}/artists") {
+            parameter("limit", limit)
         }.body()
 
     suspend fun getSourcePlatforms(): SourcePlatformListDto =

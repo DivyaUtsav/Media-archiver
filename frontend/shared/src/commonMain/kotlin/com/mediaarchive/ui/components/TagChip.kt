@@ -1,6 +1,7 @@
 package com.mediaarchive.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -17,6 +18,7 @@ import com.mediaarchive.ui.theme.*
 @Composable
 fun TagChip(
     label: String,
+    onClick: (() -> Unit)? = null,
     onRemove: (() -> Unit)? = null,
     color: Color = Surface600,
     textColor: Color = OnSurface,
@@ -25,6 +27,7 @@ fun TagChip(
         modifier = Modifier
             .clip(RoundedCornerShape(20.dp))
             .background(color)
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
             .padding(start = 12.dp, end = if (onRemove != null) 4.dp else 12.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -66,10 +69,11 @@ fun ArtTypeBadge(artType: String) {
 }
 
 @Composable
-fun ConfidenceChip(label: String, confidence: Double?) {
+fun ConfidenceChip(label: String, confidence: Double?, onClick: (() -> Unit)? = null) {
     val pct = confidence?.let { " ${(it * 100).toInt()}%" } ?: ""
     TagChip(
         label = "$label$pct",
+        onClick = onClick,
         color = Surface600.copy(alpha = 0.7f),
         textColor = OnSurfaceMuted,
     )

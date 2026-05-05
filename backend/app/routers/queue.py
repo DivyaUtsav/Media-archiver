@@ -128,6 +128,15 @@ def get_next_pending_artwork(db: Session = Depends(get_db)) -> dict:
     }
 
 
+@router.post("/re-enrich")
+def re_enrich_pending(db: Session = Depends(get_db)) -> dict:
+    stats = run_re_enrichment(db)
+    return {
+        "processed": stats["processed"],
+        "resolved": stats["resolved"],
+        "still_pending": stats["still_pending"]
+    }
+
 @router.post("/{artwork_id}/complete")
 def complete_pending_artwork(artwork_id: int, payload: QueueCompleteRequest, db: Session = Depends(get_db)) -> dict:
     artwork = db.get(Artwork, artwork_id)
@@ -182,12 +191,18 @@ def complete_pending_artwork(artwork_id: int, payload: QueueCompleteRequest, db:
     db.refresh(artwork)
     return {"id": artwork.id, "status": artwork.status, "file_path": artwork.file_path, "updated_at": artwork.updated_at}
 
-
-@router.post("/re-enrich")
-def re_enrich_pending(db: Session = Depends(get_db)) -> dict:
-    stats = run_re_enrichment(db)
-    return {
-        "processed": stats["processed"],
-        "resolved": stats["resolved"],
-        "still_pending": stats["still_pending"]
-    }
+@router.delete("/{artwork_id}")
+def delete_pending_artwork(artwork_id: int, db: Session = Depends(get_db)) -> dict:
+    artwork = db.get(Artwork, artwork_id)
+    if not artwork or artwork.status != "pending_review":
+        raise HTTPException(status_code=404, detail="Pending artwork not found.")
+    
+    # Delete file from disk
+    file_path = Path(artwork.file_path)
+    if file_path.exists():
+        file_path.unlink()
+    
+    # Delete record — cascade handles artwork_pending_tags, artwork_characters, artwork_artists
+    db.delete(artwork)
+    db.commit()
+    return {"id": artwork_id, "deleted": True}

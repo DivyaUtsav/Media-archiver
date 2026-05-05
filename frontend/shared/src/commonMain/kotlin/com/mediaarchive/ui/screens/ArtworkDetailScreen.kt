@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -28,144 +29,179 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
-
-@OptIn(ExperimentalMaterial3Api::class)
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import kotlinx.coroutines.launch
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun ArtworkDetailScreen(
-    viewModel: ArtworkDetailViewModel,
+    initialArtworkId: Int,
     galleryViewModel: com.mediaarchive.viewmodel.GalleryViewModel,
     onBack: () -> Unit,
-    onNavigate: (Int) -> Unit,
+    onArtistClick: (Int) -> Unit,
 ) {
-    val state by viewModel.state.collectAsState()
     val galleryState by galleryViewModel.state.collectAsState()
+    val initialIndex = remember { galleryState.artworks.indexOfFirst { it.id == initialArtworkId }.coerceAtLeast(0) }
+    val pagerState = androidx.compose.foundation.pager.rememberPagerState(initialPage = initialIndex) { galleryState.artworks.size }
 
-    val currentIndex = galleryState.artworks.indexOfFirst { it.id == state.artwork?.id }
-    val prevId = if (currentIndex > 0) galleryState.artworks[currentIndex - 1].id else null
-    val nextId = if (currentIndex != -1 && currentIndex < galleryState.artworks.size - 1) galleryState.artworks[currentIndex + 1].id else null
-
-    LaunchedEffect(currentIndex, galleryState.artworks.size) {
-        if (currentIndex != -1 && currentIndex >= galleryState.artworks.size - 4) {
+    LaunchedEffect(pagerState.currentPage, galleryState.artworks.size) {
+        if (pagerState.currentPage >= galleryState.artworks.size - 4) {
             galleryViewModel.loadMore()
         }
     }
 
-    var dragOffset by remember { mutableStateOf(0f) }
+    androidx.compose.foundation.pager.HorizontalPager(
+        state = pagerState,
+        modifier = Modifier.fillMaxSize(),
+        beyondViewportPageCount = 1,
+    ) { page ->
+        val artwork = galleryState.artworks[page]
+        val vm = remember(artwork.id) { ArtworkDetailViewModel(AppContainer.apiClient, artwork.id) }
+        
+        ArtworkDetailPage(
+            viewModel = vm,
+            onBack = onBack,
+            onDelete = { galleryViewModel.removeArtwork(artwork.id) },
+            onArtistClick = onArtistClick,
+        )
+    }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Artwork Detail") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    if (!state.isEditing) {
-                        IconButton(onClick = viewModel::startEditing) {
-                            Icon(Icons.Default.Edit, contentDescription = "Edit tags")
-                        }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
-            )
-        },
-    ) { padding ->
-        Box(modifier = Modifier
-            .padding(padding)
-            .fillMaxSize()
-            .pointerInput(prevId, nextId) {
-                detectHorizontalDragGestures(
-                    onDragStart = { dragOffset = 0f },
-                    onDragEnd = {
-                        if (dragOffset > 50 && prevId != null) onNavigate(prevId)
-                        else if (dragOffset < -50 && nextId != null) onNavigate(nextId)
-                    },
-                    onHorizontalDrag = { change, dragAmount ->
-                        dragOffset += dragAmount
-                    }
-                )
-            }
-        ) {
-            when {
-                state.isLoading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                state.error != null -> {
-                    Column(modifier = Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Failed to load artwork")
-                        Button(onClick = viewModel::load) { Text("Retry") }
-                    }
+    if (com.mediaarchive.isDesktop) {
+        val scope = rememberCoroutineScope()
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (pagerState.currentPage > 0) {
+                IconButton(
+                    onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } },
+                    modifier = Modifier.align(Alignment.CenterStart).padding(16.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.5f))
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous", tint = Color.White)
                 }
-                state.artwork != null -> {
-                    val artwork = state.artwork!!
-                    Column(
-                        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).imePadding(),
-                    ) {
-                        // Hero image box with navigation arrows
-                        Box(modifier = Modifier.fillMaxWidth().heightIn(max = 600.dp)) {
-                            AsyncImage(
-                                model = AppContainer.apiClient.mediaUrl(artwork.id),
-                                contentDescription = "Artwork",
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                            
-                            if (prevId != null) {
-                                IconButton(
-                                    onClick = { onNavigate(prevId) },
-                                    modifier = Modifier
-                                        .align(Alignment.CenterStart)
-                                        .padding(8.dp)
-                                        .clip(CircleShape)
-                                        .background(Color.Black.copy(alpha = 0.5f))
-                                ) {
-                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous", tint = Color.White)
-                                }
-                            }
-
-                            if (nextId != null) {
-                                IconButton(
-                                    onClick = { onNavigate(nextId) },
-                                    modifier = Modifier
-                                        .align(Alignment.CenterEnd)
-                                        .padding(8.dp)
-                                        .clip(CircleShape)
-                                        .background(Color.Black.copy(alpha = 0.5f))
-                                ) {
-                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next", tint = Color.White)
-                                }
-                            }
-                        }
-
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                        ) {
-                            if (state.isEditing && state.editState != null) {
-                                EditPanel(
-                                    editState = state.editState!!,
-                                    api = AppContainer.apiClient,
-                                    onUpdate = viewModel::updateEditState,
-                                    onSave = viewModel::saveTags,
-                                    onCancel = viewModel::cancelEditing,
-                                    isSaving = state.isSaving,
-                                    saveError = state.saveError,
-                                    onCreateCharacter = viewModel::createAndAddCharacter,
-                                    onCreateArtist = viewModel::createAndAddArtist,
-                                )
-                            } else {
-                                ReadOnlyTagPanel(artwork)
-                            }
-                        }
-                    }
+            }
+            if (pagerState.currentPage < galleryState.artworks.size - 1) {
+                IconButton(
+                    onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } },
+                    modifier = Modifier.align(Alignment.CenterEnd).padding(16.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.5f))
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next", tint = Color.White)
                 }
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ReadOnlyTagPanel(artwork: ArtworkDetailDto) {
+private fun ArtworkDetailPage(
+    viewModel: ArtworkDetailViewModel,
+    onBack: () -> Unit,
+    onDelete: () -> Unit,
+    onArtistClick: (Int) -> Unit,
+) {
+    val state by viewModel.state.collectAsState()
+    val scaffoldState = rememberBottomSheetScaffoldState()
+    var isImmersive by remember { mutableStateOf(false) }
+
+    BottomSheetScaffold(
+        scaffoldState = scaffoldState,
+        sheetPeekHeight = 100.dp,
+        sheetContent = {
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                if (state.isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+                } else if (state.error != null) {
+                    Text("Failed to load artwork")
+                } else if (state.artwork != null) {
+                    if (state.isEditing && state.editState != null) {
+                        EditPanel(
+                            editState = state.editState!!,
+                            api = AppContainer.apiClient,
+                            onUpdate = viewModel::updateEditState,
+                            onSave = viewModel::saveTags,
+                            onCancel = viewModel::cancelEditing,
+                            isSaving = state.isSaving,
+                            saveError = state.saveError,
+                            onCreateCharacter = viewModel::createAndAddCharacter,
+                            onCreateArtist = viewModel::createAndAddArtist,
+                        )
+                    } else {
+                        ReadOnlyTagPanel(state.artwork!!, onArtistClick)
+                    }
+                }
+            }
+        },
+    ) { padding ->
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+            when {
+                state.artwork != null -> {
+                    AsyncImage(
+                        model = AppContainer.apiClient.mediaUrl(state.artwork!!.id),
+                        contentDescription = "Artwork",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize().clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { isImmersive = !isImmersive }
+                    )
+                }
+            }
+
+            androidx.compose.animation.AnimatedVisibility(
+                visible = !isImmersive,
+                enter = androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.fadeOut()
+            ) {
+                TopAppBar(
+                    title = { },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                    },
+                    actions = {
+                        if (!state.isEditing) {
+                            var showDeleteConfirm by remember { mutableStateOf(false) }
+                            IconButton(onClick = { showDeleteConfirm = true }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
+                            }
+                            IconButton(onClick = viewModel::startEditing) {
+                                Icon(Icons.Default.Edit, contentDescription = "Edit tags")
+                            }
+                            if (showDeleteConfirm) {
+                                AlertDialog(
+                                    onDismissRequest = { showDeleteConfirm = false },
+                                    title = { Text("Delete Artwork") },
+                                    text = { Text("Are you sure you want to delete this artwork? The file will be permanently removed.") },
+                                    confirmButton = {
+                                        Button(onClick = {
+                                            viewModel.deleteArtwork { onDelete() }
+                                            showDeleteConfirm = false
+                                        }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
+                                            Text("Delete")
+                                        }
+                                    },
+                                    dismissButton = {
+                                        OutlinedButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
+                                    }
+                                )
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Black.copy(alpha = 0.5f),
+                        navigationIconContentColor = Color.White,
+                        actionIconContentColor = Color.White
+                    ),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReadOnlyTagPanel(artwork: ArtworkDetailDto, onArtistClick: (Int) -> Unit) {
     // Rating + art type row
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         artwork.contentRating?.let { RatingBadge(it) }
@@ -191,8 +227,8 @@ private fun ReadOnlyTagPanel(artwork: ArtworkDetailDto) {
             Text("Artists", style = MaterialTheme.typography.labelMedium, color = OnSurfaceMuted)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 artwork.artists.forEach { a ->
-                    if (a.isManual) TagChip(a.name)
-                    else ConfidenceChip(a.name, a.confidence)
+                    if (a.isManual) TagChip(a.name, onClick = { onArtistClick(a.id) })
+                    else ConfidenceChip(a.name, a.confidence, onClick = { onArtistClick(a.id) })
                 }
             }
         }

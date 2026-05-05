@@ -94,25 +94,36 @@ def _match_graph_entities(db: Session, context_text: str) -> tuple[list[dict], l
 
 def _route_pending_categories(tags: dict) -> list[str]:
     pending_categories: list[str] = []
+
+    # Characters — required. No characters = review queue.
     characters = tags["characters"]
     if not characters or any(item["confidence"] < AUTO_TAG_MINIMUM for item in characters):
         pending_categories.append("character")
 
+    # Artists — flag if low confidence OR if any artist is unknown (no artist_id).
+    # Unknown artists must go to review so the user can create them.
     artists = tags["artists"]
-    if artists and any(item["confidence"] < AUTO_TAG_MINIMUM for item in artists):
+    if artists and (
+        any(item["confidence"] < AUTO_TAG_MINIMUM for item in artists)
+        or any(item.get("artist_id") is None for item in artists)
+    ):
         pending_categories.append("artist")
 
+    # Publication platform — optional, flag only if found but low confidence.
     platform = tags["publication_platform"]
     if platform and platform["confidence"] < AUTO_TAG_MINIMUM:
         pending_categories.append("source_platform")
 
+    # Content rating — Suggestive always goes to review.
     rating = tags["content_rating"]
     if rating["value"] is None or rating["value"] == "Suggestive" or rating["confidence"] < AUTO_TAG_MINIMUM:
         pending_categories.append("content_rating")
 
+    # Art type
     art_type = tags["art_type"]
     if art_type["value"] is None or art_type["confidence"] < AUTO_TAG_MINIMUM:
         pending_categories.append("art_type")
+
     return pending_categories
 
 
@@ -202,7 +213,8 @@ def run_enrichment(
             continue
 
         context = sidecar.get("platform_context") or {}
-        # Build text blob from whatever platform context fields are available
+
+        # Build text blob from all available context fields — platform-agnostic.
         text_blob = " ".join(filter(None, [
             str(context.get("subreddit") or ""),
             str(context.get("title") or ""),
@@ -212,6 +224,7 @@ def run_enrichment(
         ]))
 
         graph_characters, graph_artists, publication_platform = _match_graph_entities(db, text_blob)
+
         try:
             extraction = text_provider.extract(
                 subreddit=str(context.get("subreddit") or ""),
@@ -224,10 +237,11 @@ def run_enrichment(
                 raise
             extraction = get_text_provider("none").extract("", "", "", {})
 
+        # Merge graph matches with SLM extractions — characters
         characters = list(graph_characters)
         known_character_names = {c["name"].lower() for c in characters}
         for name in extraction.characters:
-            if name.lower() in known_character_names:
+            if not name or name.lower() in known_character_names:
                 continue
             matched = _find_character_by_name(db, name)
             characters.append(
@@ -239,10 +253,11 @@ def run_enrichment(
                 }
             )
 
+        # Merge graph matches with SLM extractions — artists
         artists = list(graph_artists)
         known_artist_names = {a["name"].lower() for a in artists}
         for name in extraction.artists:
-            if name.lower() in known_artist_names:
+            if not name or name.lower() in known_artist_names:
                 continue
             matched_artist = _find_artist_by_name(db, name)
             artists.append(
@@ -262,28 +277,38 @@ def run_enrichment(
                 "source": "slm",
             }
 
-        # Auto-suggest Twitter author as artist if not already identified
-        twitter_author = str(context.get("author") or "")
-        if twitter_author and sidecar.get("source_platform") == "Twitter":
-            author_lower = twitter_author.lower()
-            if author_lower not in {a["name"].lower() for a in artists}:
-                matched_artist = _find_artist_by_name(db, twitter_author)
-                artists.append({
-                    "name": twitter_author,
-                    "artist_id": matched_artist.id if matched_artist else None,
-                    "confidence": 0.80,
-                    "source": "graph" if matched_artist else "slm",
-                })
+        # Platform-agnostic author auto-tagging.
+        # Any platform that puts an "author" field in platform_context gets automatic
+        # artist suggestion — Twitter, Reddit, Pixiv, all handled the same way.
+        context_author = str(context.get("author") or "").strip()
+        if context_author and context_author.lower() not in known_artist_names:
+            matched_artist = _find_artist_by_name(db, context_author)
+            artists.append({
+                "name": context_author,
+                "artist_id": matched_artist.id if matched_artist else None,
+                # Known artists get graph confidence, unknown go to review
+                "confidence": 0.85 if matched_artist else 0.80,
+                "source": "graph" if matched_artist else "slm",
+            })
+            known_artist_names.add(context_author.lower())
 
+        # Ensure ingestion source platform is recorded on artwork
         platform_name = sidecar.get("source_platform")
         platform_row = _get_or_create_platform(db, platform_name)
         if artwork.source_platform_id is None and platform_row:
             artwork.source_platform_id = platform_row.id
 
-        # Twitter sensitive flag
-        twitter_sensitive = bool((context or {}).get("sensitive", False))
+        # Also set publication_platform to ingestion source if not already determined.
+        # This ensures artworks always have a publication platform recorded.
+        if artwork.publication_platform_id is None and platform_row:
+            artwork.publication_platform_id = platform_row.id
+            artwork.publication_platform_confidence = 1.0
+            artwork.publication_platform_is_manual = False
+
+        # Content rating — use sensitive flag from platform_context as NSFW prior
         subreddit = str(context.get("subreddit") or "").lower()
-        is_nsfw_context = twitter_sensitive or any(
+        platform_sensitive = bool(context.get("sensitive", False))
+        is_nsfw_context = platform_sensitive or any(
             flag in subreddit for flag in ("nsfw", "hentai", "rule34")
         )
         try:
@@ -292,6 +317,7 @@ def run_enrichment(
             if settings.enrichment_strict_providers:
                 raise
             content_result = get_content_provider("none").classify(media_path, subreddit_is_nsfw=False)
+
         try:
             art_type_result = art_type_provider.classify(media_path)
         except Exception:
@@ -317,6 +343,7 @@ def run_enrichment(
         artwork.art_type = art_type["value"] if art_type["value"] in {"Artwork", "Cosplay", "AI Generated"} else None
         artwork.art_type_confidence = art_type["confidence"]
         artwork.art_type_is_manual = False
+
         if publication_platform and publication_platform.get("platform_id"):
             artwork.publication_platform_id = publication_platform["platform_id"]
             artwork.publication_platform_confidence = publication_platform["confidence"]
@@ -329,14 +356,24 @@ def run_enrichment(
         destination = resolve_review_destination(settings.archive_root, series_names if artwork.status == "gallery" else [])
         destination.mkdir(parents=True, exist_ok=True)
         final_media = destination / media_path.name
+
         try:
             shutil.move(str(media_path), str(final_media))
             sidecar_path.unlink(missing_ok=True)
             artwork.file_path = str(final_media)
             artwork.file_missing = False
+
+            # Clean up original source file from ingestion_work if tracked
+            original_path_str = sidecar.get("original_file_path")
+            if original_path_str:
+                original_path = Path(original_path_str)
+                if original_path.exists() and original_path.resolve() != final_media.resolve():
+                    original_path.unlink(missing_ok=True)
+
         except OSError:
             # Move failed — leave the file in the handoff dir and flag the record.
             artwork.file_missing = True
+
         stats.processed += 1
         if artwork.status == "gallery":
             stats.moved_to_gallery += 1
@@ -344,11 +381,20 @@ def run_enrichment(
             stats.moved_to_pending += 1
         db.add(artwork)
         db.commit()
+
     return stats
 
+
 def run_re_enrichment(db: Session) -> dict:
+    """
+    Re-runs graph matching on all pending_review artworks.
+    Auto-resolves tag categories that now meet AUTO_TAG_MINIMUM
+    after new characters/series/artists have been added to the knowledge graph.
+    Only re-evaluates character, artist, and source_platform — skips
+    content_rating and art_type since those are set by vision providers.
+    """
     stats = {"processed": 0, "resolved": 0, "still_pending": 0}
-    
+
     pending_artworks = db.execute(
         select(Artwork).where(Artwork.status == "pending_review")
     ).scalars().all()
@@ -364,33 +410,37 @@ def run_re_enrichment(db: Session) -> dict:
             continue
 
         context = artwork.platform_context or {}
-        text_blob = " ".join([
+        text_blob = " ".join(filter(None, [
             str(context.get("subreddit") or ""),
             str(context.get("title") or ""),
-            str(context.get("flair") or "")
-        ])
+            str(context.get("flair") or ""),
+            str(context.get("content") or ""),
+            str(context.get("author") or ""),
+        ]))
 
         graph_characters, graph_artists, publication_platform = _match_graph_entities(db, text_blob)
-
-        resolved_categories = set()
+        resolved_categories: set[str] = set()
 
         # Re-evaluate characters
         if "character" in pending_categories:
             if graph_characters and all(c["confidence"] >= AUTO_TAG_MINIMUM for c in graph_characters):
-                series_names = _replace_artwork_characters(db, artwork.id, graph_characters)
+                _replace_artwork_characters(db, artwork.id, graph_characters)
                 db.query(ArtworkPendingTag).filter(
                     ArtworkPendingTag.artwork_id == artwork.id,
-                    ArtworkPendingTag.tag_category == "character"
+                    ArtworkPendingTag.tag_category == "character",
                 ).delete()
                 resolved_categories.add("character")
 
         # Re-evaluate artists
         if "artist" in pending_categories:
-            if graph_artists and all(a["confidence"] >= AUTO_TAG_MINIMUM for a in graph_artists):
+            if graph_artists and all(
+                a["confidence"] >= AUTO_TAG_MINIMUM and a.get("artist_id") is not None
+                for a in graph_artists
+            ):
                 _replace_artwork_artists(db, artwork.id, graph_artists)
                 db.query(ArtworkPendingTag).filter(
                     ArtworkPendingTag.artwork_id == artwork.id,
-                    ArtworkPendingTag.tag_category == "artist"
+                    ArtworkPendingTag.tag_category == "artist",
                 ).delete()
                 resolved_categories.add("artist")
 
@@ -402,11 +452,11 @@ def run_re_enrichment(db: Session) -> dict:
                 artwork.publication_platform_is_manual = False
                 db.query(ArtworkPendingTag).filter(
                     ArtworkPendingTag.artwork_id == artwork.id,
-                    ArtworkPendingTag.tag_category == "source_platform"
+                    ArtworkPendingTag.tag_category == "source_platform",
                 ).delete()
                 resolved_categories.add("source_platform")
 
-        # Check if all pending categories are now resolved
+        # If all pending categories resolved, move to gallery
         remaining = pending_categories - resolved_categories
         if not remaining:
             # Move file from _pending to correct destination

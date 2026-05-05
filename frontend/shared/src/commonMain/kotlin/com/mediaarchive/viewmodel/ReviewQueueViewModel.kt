@@ -139,4 +139,18 @@ class ReviewQueueViewModel(private val api: ApiClient) : ViewModel() {
             }
         }
     }
+
+    fun deleteCurrent() {
+        val artwork = _state.value.currentArtwork ?: return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isSubmitting = true, submitError = null)
+            try {
+                api.deletePendingArtwork(artwork.id)
+                _state.value = _state.value.copy(isSubmitting = false)
+                loadNext()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(isSubmitting = false, submitError = "Failed to delete: ${e.message}")
+            }
+        }
+    }
 }

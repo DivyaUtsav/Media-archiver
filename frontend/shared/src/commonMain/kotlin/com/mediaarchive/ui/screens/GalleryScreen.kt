@@ -41,6 +41,7 @@ fun GalleryScreen(
         filters = state.filters,
         onFiltersChanged = viewModel::updateFilters,
         availableSeries = state.availableSeries,
+        availableArtists = state.availableArtists,
         availableContentRatings = state.availableContentRatings,
         availableArtTypes = state.availableArtTypes,
     ) {
