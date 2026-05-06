@@ -34,7 +34,10 @@ fun ReviewQueueScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Review Queue · ${state.queueCount} pending") },
+                title = {
+    val label = state.selectedPlatform?.let { "${it.name} (${it.count})" } ?: "All Platforms (${state.totalCount})"
+    Text("Review Queue · $label")
+},
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
@@ -70,12 +73,51 @@ fun ReviewQueueScreen(
             )
         },
     ) { padding ->
-        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
-            when {
-                state.isLoading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                state.isEmpty -> {
-                    Column(
-                        modifier = Modifier.align(Alignment.Center),
+        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+            // Platform filter dropdown
+            var menuExpanded by remember { mutableStateOf(false) }
+            val options = listOf<Pair<String, com.mediaarchive.data.api.QueuePlatformDto?>> (
+                "All Platforms (${state.totalCount})" to null
+            ) + state.platforms.sortedWith(compareByDescending<com.mediaarchive.data.api.QueuePlatformDto> { it.count }.thenBy { it.name })
+                .map { "${it.name} (${it.count})" to it }
+            val selectedLabel = options.find { it.second?.id == state.selectedPlatform?.id }?.first
+                ?: options[0].first
+            ExposedDropdownMenuBox(
+                expanded = menuExpanded,
+                onExpandedChange = { menuExpanded = !menuExpanded },
+                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+            ) {
+                OutlinedTextField(
+                    value = selectedLabel,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Platform Filter") },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = menuExpanded) },
+                    modifier = Modifier.menuAnchor(MenuAnchorType.PrimaryNotEditable).fillMaxWidth(),
+                )
+                ExposedDropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                ) {
+                    options.forEach { (label, platform) ->
+                        DropdownMenuItem(
+                            text = { Text(label) },
+                            onClick = {
+                                if (state.selectedPlatform?.id != platform?.id) {
+                                    viewModel.selectPlatform(platform)
+                                }
+                                menuExpanded = false
+                            },
+                        )
+                    }
+                }
+            }
+            Box(modifier = Modifier.fillMaxSize()) {
+                when {
+                    state.isLoading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    state.isEmpty -> {
+                        Column(
+                            modifier = Modifier.align(Alignment.Center),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
@@ -105,10 +147,11 @@ fun ReviewQueueScreen(
                         submitError = state.submitError,
                     )
                 }
-            }
-        }
-    }
-}
+            } // closes when
+        } // closes Box
+    } // closes Column
+    } // closes Scaffold
+} // closes ReviewQueueScreen
 
 @Composable
 private fun ReviewArtworkPanel(
@@ -168,8 +211,9 @@ private fun ReviewArtworkPanel(
                         if (ctx.flair != null) Text(ctx.flair, style = MaterialTheme.typography.labelSmall, color = OnSurfaceMuted)
                     }
                 }
-                if (artwork.sourceUrl.isNotBlank()) {
-                    IconButton(onClick = { uriHandler.openUri(artwork.sourceUrl) }) {
+                val linkUrl = artwork.sourcePlatformUrl ?: artwork.sourceUrl
+                if (linkUrl.isNotBlank()) {
+                    IconButton(onClick = { uriHandler.openUri(linkUrl) }) {
                         Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = "View Original Post")
                     }
                 }
@@ -242,6 +286,24 @@ private fun ReviewArtworkPanel(
             if ("artist" in pendingCategories) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     SectionHeader("Artists", null)
+                    if (editState.artistSuggestions.isNotEmpty()) {
+                        Text("Suggestions:", style = MaterialTheme.typography.labelSmall, color = OnSurfaceMuted)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            editState.artistSuggestions.forEach { s ->
+                                SuggestionChip(
+                                    onClick = {
+                                        if (s.artistId != null) {
+                                            val artist = ArtistDto(s.artistId, s.name ?: "")
+                                            onUpdateEditState(editState.copy(artists = editState.artists + artist))
+                                        } else {
+                                            artistQuery = s.name ?: ""
+                                        }
+                                    },
+                                    label = { Text("${s.name ?: ""} (${(s.confidence * 100).toInt()}%)") },
+                                )
+                            }
+                        }
+                    }
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         editState.artists.forEach { a ->
                             TagChip(a.name, onRemove = { onUpdateEditState(editState.copy(artists = editState.artists.filter { it.id != a.id })) })

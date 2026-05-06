@@ -36,6 +36,19 @@ data class ArtistDto(
 data class SourcePlatformDto(val id: Int, val name: String)
 
 @Serializable
+data class QueuePlatformDto(
+    val id: Int,
+    val name: String,
+    val count: Int
+)
+
+@Serializable
+data class QueuePlatformsResponse(
+    val platforms: List<QueuePlatformDto>,
+    val total: Int
+)
+
+@Serializable
 data class SeriesListDto(val items: List<SeriesDto>)
 
 @Serializable
@@ -180,6 +193,7 @@ data class QueueArtworkDto(
     @SerialName("file_url") val fileUrl: String,
     @SerialName("platform_context") val platformContext: PlatformContextDto?,
     @SerialName("source_url") val sourceUrl: String,
+    @SerialName("source_platform_url") val sourcePlatformUrl: String?,
     @SerialName("pending_categories") val pendingCategories: List<String>,
     @SerialName("current_tags") val currentTags: CurrentTagsDto,
     val suggestions: QueueSuggestionsDto,

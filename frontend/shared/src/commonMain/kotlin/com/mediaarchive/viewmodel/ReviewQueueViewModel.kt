@@ -24,6 +24,9 @@ data class ReviewQueueState(
     val currentArtwork: QueueArtworkDto? = null,
     val isLoading: Boolean = false,
     val queueCount: Int = 0,
+    val platforms: List<QueuePlatformDto> = emptyList(),
+    val totalCount: Int = 0,
+    val selectedPlatform: QueuePlatformDto? = null,
     val pendingCategories: List<String> = emptyList(),
     val tagEditState: ReviewTagEditState = ReviewTagEditState(),
     val isSubmitting: Boolean = false,
@@ -37,18 +40,47 @@ class ReviewQueueViewModel(private val api: ApiClient) : ViewModel() {
     private val _state = MutableStateFlow(ReviewQueueState())
     val state: StateFlow<ReviewQueueState> = _state
 
-    init { loadNext() }
+    init {
+        loadPlatformsAndNext()
+    }
+
+    fun loadPlatformsAndNext() {
+        viewModelScope.launch {
+            try {
+                val result = api.getQueuePlatforms()
+                val initialPlatform = _state.value.selectedPlatform?.let { selected ->
+                    result.platforms.find { it.id == selected.id }
+                }
+                _state.value = _state.value.copy(
+                    platforms = result.platforms,
+                    totalCount = result.total,
+                    selectedPlatform = initialPlatform,
+                )
+                loadNext()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(platforms = emptyList(), totalCount = 0)
+                loadNext()
+            }
+        }
+    }
+
+    fun selectPlatform(platform: QueuePlatformDto?) {
+        _state.value = _state.value.copy(selectedPlatform = platform)
+        loadNext()
+    }
+
 
     fun loadNext() {
         viewModelScope.launch {
             _state.value = _state.value.copy(isLoading = true, error = null, isEmpty = false, submitError = null)
+            val platformName = _state.value.selectedPlatform?.name
             try {
-                val count = api.getQueueCount()
+                val count = api.getQueueCount(platformName)
                 if (count.count == 0) {
                     _state.value = _state.value.copy(isLoading = false, isEmpty = true, queueCount = 0, currentArtwork = null)
                     return@launch
                 }
-                val artwork = api.getNextQueueItem()
+                val artwork = api.getNextQueueItem(platformName)
                 _state.value = _state.value.copy(
                     isLoading = false,
                     currentArtwork = artwork,
@@ -133,7 +165,7 @@ class ReviewQueueViewModel(private val api: ApiClient) : ViewModel() {
                     ),
                 )
                 _state.value = _state.value.copy(isSubmitting = false)
-                loadNext()
+                loadPlatformsAndNext()
             } catch (e: Exception) {
                 _state.value = _state.value.copy(isSubmitting = false, submitError = e.message)
             }
@@ -147,7 +179,7 @@ class ReviewQueueViewModel(private val api: ApiClient) : ViewModel() {
             try {
                 api.deletePendingArtwork(artwork.id)
                 _state.value = _state.value.copy(isSubmitting = false)
-                loadNext()
+                loadPlatformsAndNext()
             } catch (e: Exception) {
                 _state.value = _state.value.copy(isSubmitting = false, submitError = "Failed to delete: ${e.message}")
             }

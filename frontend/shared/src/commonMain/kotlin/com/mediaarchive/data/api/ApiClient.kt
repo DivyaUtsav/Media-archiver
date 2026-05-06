@@ -66,11 +66,18 @@ class ApiClient(private val baseUrl: () -> String) {
 
     // ── Queue ────────────────────────────────────────────────────────────────
 
-    suspend fun getQueueCount(): QueueCountDto =
-        client.get("${baseUrl()}/queue/count").body()
+    suspend fun getQueueCount(sourcePlatform: String? = null): QueueCountDto =
+        client.get("${baseUrl()}/queue/count") {
+            sourcePlatform?.let { parameter("source_platform", it) }
+        }.body()
 
-    suspend fun getNextQueueItem(): QueueArtworkDto =
-        client.get("${baseUrl()}/queue/next").body()
+    suspend fun getNextQueueItem(sourcePlatform: String? = null): QueueArtworkDto =
+        client.get("${baseUrl()}/queue/next") {
+            sourcePlatform?.let { parameter("source_platform", it) }
+        }.body()
+
+    suspend fun getQueuePlatforms(): QueuePlatformsResponse =
+        client.get("${baseUrl()}/queue/platforms").body()
 
     suspend fun completeQueueItem(id: Int, request: CompleteQueueRequest): UpdateTagsResponse =
         client.post("${baseUrl()}/queue/$id/complete") {

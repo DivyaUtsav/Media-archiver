@@ -140,6 +140,7 @@ def get_next_pending_artwork(
         "file_url": f"/artworks/{artwork.id}/media",
         "platform_context": artwork.platform_context,
         "source_url": artwork.source_url,
+        "source_platform_url": artwork.source_platform_url,
         "pending_categories": pending_categories,
         "current_tags": {
             "content_rating": artwork.content_rating,
@@ -155,6 +156,24 @@ def get_next_pending_artwork(
         "suggestions": suggestions,
     }
 
+
+@router.get("/platforms")
+def get_platforms_with_pending_queue(db: Session = Depends(get_db)) -> dict:
+    stmt = (
+        select(SourcePlatform.id, SourcePlatform.name, func.count().label("count"))
+        .select_from(Artwork)
+        .join(SourcePlatform, SourcePlatform.id == Artwork.source_platform_id)
+        .where(Artwork.status == "pending_review")
+        .group_by(SourcePlatform.id, SourcePlatform.name)
+    )
+    platform_rows = db.execute(stmt).all()
+    platforms = [
+        {"id": row.id, "name": row.name, "count": row.count}
+        for row in platform_rows if row.count > 0
+    ]
+    platforms.sort(key=lambda p: (-p["count"], p["name"]))
+    total = sum(p["count"] for p in platforms)
+    return {"platforms": platforms, "total": total}
 
 @router.post("/re-enrich")
 def re_enrich_pending(db: Session = Depends(get_db)) -> dict:
