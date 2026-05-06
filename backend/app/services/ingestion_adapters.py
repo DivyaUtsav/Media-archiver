@@ -287,6 +287,136 @@ class TwitterIngestionAdapter:
         except (json.JSONDecodeError, UnicodeDecodeError):
             return None
 
+class PixivIngestionAdapter:
+    """
+    Pixiv adapter supporting bookmarks and likes.
+
+    Runs gallery-dl against configured Pixiv targets, then parses
+    downloaded files and per-illustration metadata JSON files.
+    Uses database dedup to stop after batch_size new items.
+
+    Requires gallery-dl config at %APPDATA%/gallery-dl/config.json with:
+    {
+        "extractor": {
+            "pixiv": {
+                "username": "...",
+                "password": "...",
+                "postprocessors": [{"name": "metadata", "event": "post", "filename": "{id}.json"}]
+            }
+        }
+    }
+    """
+
+    MEDIA_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".zip", ".mp4", ".webm"}
+
+    def __init__(self, targets: list[str] | None = None, work_dir: Path | None = None):
+        self.targets = targets or [t.strip() for t in settings.gallery_dl_targets.split(",") if t.strip()]
+        self.work_dir = work_dir or settings.ingestion_work_dir
+
+    def fetch_items(self, db: Session, batch_size: int) -> list[IngestionItem]:
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        self._run_gallery_dl(batch_size=batch_size)
+        return self._parse_outputs(db=db, batch_size=batch_size)
+
+    def _run_gallery_dl(self, batch_size: int) -> None:
+        if not self.targets:
+            raise ValueError("No Pixiv targets configured. Set MEDIA_ARCHIVE_GALLERY_DL_TARGETS.")
+
+        cmd = ["gallery-dl", "--dest", str(self.work_dir), "--range", f"1-{batch_size}"]
+
+        if settings.gallery_dl_cookies_file:
+            cmd += ["--cookies", settings.gallery_dl_cookies_file]
+
+        extra_args = [a.strip() for a in settings.gallery_dl_extra_args.split(",") if a.strip()]
+        if extra_args:
+            cmd += extra_args
+
+        cmd += self.targets
+        subprocess.run(cmd, check=True)
+
+    def _parse_outputs(self, db: Session, batch_size: int) -> list[IngestionItem]:
+        items: list[IngestionItem] = []
+
+        # Pixiv structure: work_dir/pixiv/{subcategory}/{user_id} {username}/
+        pixiv_root = self.work_dir / "pixiv"
+        if not pixiv_root.exists():
+            return items
+
+        for subcategory_dir in pixiv_root.iterdir():
+            if not subcategory_dir.is_dir():
+                continue
+            for user_dir in subcategory_dir.iterdir():
+                if not user_dir.is_dir():
+                    continue
+                if len(items) >= batch_size:
+                    break
+
+                for json_path in sorted(user_dir.glob("*.json"), reverse=True):
+                    if json_path.stem == "info":
+                        continue
+                    if len(items) >= batch_size:
+                        break
+
+                    illust_id = json_path.stem
+                    metadata = self._read_json(json_path)
+                    if not metadata:
+                        continue
+
+                    artist_name = (metadata.get("user") or {}).get("name", "")
+                    artist_account = (metadata.get("user") or {}).get("account", "")
+
+                    # Find all media files for this illustration
+                    media_files = sorted([
+                        f for f in user_dir.iterdir()
+                        if f.stem.startswith(f"{illust_id}_")
+                        and f.suffix.lower() in self.MEDIA_SUFFIXES
+                        and not f.name.endswith(".part")
+                    ])
+
+                    for media_file in media_files:
+                        if len(items) >= batch_size:
+                            break
+
+                        source_url = f"https://www.pixiv.net/artworks/{illust_id}/{media_file.name}"
+                        if is_duplicate_source(db, source_url):
+                            continue
+
+                        # Extract tags as list of strings
+                        raw_tags = metadata.get("tags") or []
+                        tags = [t if isinstance(t, str) else t.get("name", "") for t in raw_tags]
+                        tags = [t for t in tags if t]
+
+                        items.append(IngestionItem(
+                            file_path=media_file,
+                            source_url=source_url,
+                            source_platform_url=f"https://www.pixiv.net/artworks/{illust_id}",
+                            platform_context={
+                                "illust_id": illust_id,
+                                "title": metadata.get("title", ""),
+                                "author": artist_name,
+                                "author_account": artist_account,
+                                "tags": tags,
+                                "type": metadata.get("type", "illust"),
+                                "x_restrict": metadata.get("x_restrict", 0),
+                                "sanity_level": metadata.get("sanity_level", 2),
+                                "illust_ai_type": metadata.get("illust_ai_type", 0),
+                                "page_count": metadata.get("page_count", 1),
+                                "series": metadata.get("series"),
+                            },
+                            source_platform_name="Pixiv",
+                            original_file_path=media_file,
+                        ))
+
+        return items
+
+    @staticmethod
+    def _read_json(path: Path) -> dict | None:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else None
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+
 
 def get_ingestion_adapter(adapter_name: str) -> IngestionAdapter:
     normalized = adapter_name.strip().lower()
@@ -294,4 +424,6 @@ def get_ingestion_adapter(adapter_name: str) -> IngestionAdapter:
         return GalleryDLIngestionAdapter()
     if normalized == "twitter":
         return TwitterIngestionAdapter()
+    if normalized == "pixiv":
+        return PixivIngestionAdapter()
     return ManifestIngestionAdapter()

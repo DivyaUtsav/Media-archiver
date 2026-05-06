@@ -1,7 +1,7 @@
 from pathlib import Path
 import shutil
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -65,16 +65,44 @@ def _replace_artwork_artists(db: Session, artwork_id: int, artist_ids: list[int]
 
 
 @router.get("/count")
-def get_queue_count(db: Session = Depends(get_db)) -> dict:
-    count = db.scalar(select(func.count()).select_from(Artwork).where(Artwork.status == "pending_review")) or 0
+def get_queue_count(
+    source_platform: str | None = Query(default=None),
+    db: Session = Depends(get_db)
+) -> dict:
+    stmt = select(func.count()).select_from(Artwork).where(Artwork.status == "pending_review")
+    if source_platform:
+        stmt = (
+            select(func.count())
+            .select_from(Artwork)
+            .join(SourcePlatform, SourcePlatform.id == Artwork.source_platform_id)
+            .where(Artwork.status == "pending_review")
+            .where(SourcePlatform.name.ilike(source_platform))
+        )
+    count = db.scalar(stmt) or 0
     return {"count": count}
 
 
 @router.get("/next")
-def get_next_pending_artwork(db: Session = Depends(get_db)) -> dict:
-    artwork = db.execute(
-        select(Artwork).where(Artwork.status == "pending_review").order_by(Artwork.ingestion_timestamp.asc()).limit(1)
-    ).scalar_one_or_none()
+def get_next_pending_artwork(
+    source_platform: str | None = Query(default=None),
+    db: Session = Depends(get_db)
+) -> dict:
+    stmt = (
+        select(Artwork)
+        .where(Artwork.status == "pending_review")
+        .order_by(Artwork.ingestion_timestamp.asc())
+        .limit(1)
+    )
+    if source_platform:
+        stmt = (
+            select(Artwork)
+            .join(SourcePlatform, SourcePlatform.id == Artwork.source_platform_id)
+            .where(Artwork.status == "pending_review")
+            .where(SourcePlatform.name.ilike(source_platform))
+            .order_by(Artwork.ingestion_timestamp.asc())
+            .limit(1)
+        )
+    artwork = db.execute(stmt).scalar_one_or_none()
     if not artwork:
         raise HTTPException(status_code=404, detail="No pending artworks.")
 

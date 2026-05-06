@@ -19,6 +19,7 @@ from app.models import (
 )
 from app.services.enrichment_providers import (
     ArtTypeProvider,
+    CharacterHint,
     ContentRatingProvider,
     TextExtractionProvider,
     get_art_type_provider,
@@ -37,11 +38,25 @@ class EnrichmentStats:
     moved_to_pending: int = 0
 
 
+# ── Text utilities ─────────────────────────────────────────────────────────────
+
 def _contains_phrase(text: str, phrase: str) -> bool:
     if not phrase.strip():
         return False
     pattern = rf"\b{re.escape(phrase.lower())}\b"
     return re.search(pattern, text.lower()) is not None
+
+
+def _name_variants(name: str) -> list[str]:
+    """
+    Return name and its word-order reversal.
+    Handles 'Mahiru Shiina' <-> 'Shiina Mahiru' matching.
+    Only applies to two-word names — longer names are returned as-is.
+    """
+    parts = name.strip().split()
+    if len(parts) == 2:
+        return [name, f"{parts[1]} {parts[0]}"]
+    return [name]
 
 
 def _read_sidecar(sidecar_path: Path) -> dict | None:
@@ -53,6 +68,8 @@ def _read_sidecar(sidecar_path: Path) -> dict | None:
         return None
     return payload
 
+
+# ── Database helpers ───────────────────────────────────────────────────────────
 
 def _get_or_create_platform(db: Session, name: str | None) -> SourcePlatform | None:
     if not name:
@@ -66,18 +83,84 @@ def _get_or_create_platform(db: Session, name: str | None) -> SourcePlatform | N
     return created
 
 
-def _match_graph_entities(db: Session, context_text: str) -> tuple[list[dict], list[dict], dict | None]:
+def _find_character_by_name(db: Session, name: str) -> Character | None:
+    """
+    Find a character by name, trying both word orderings.
+    'Mahiru Shiina' will also check 'Shiina Mahiru'.
+    """
+    for variant in _name_variants(name):
+        match = db.scalar(select(Character).where(Character.name.ilike(variant)))
+        if match:
+            return match
+    return None
+
+
+def _find_series_by_name(db: Session, name: str) -> Series | None:
+    return db.scalar(select(Series).where(Series.name.ilike(name)))
+
+
+def _find_artist_by_name(db: Session, name: str) -> Artist | None:
+    return db.scalar(select(Artist).where(Artist.name.ilike(name)))
+
+
+def _find_platform_by_name(db: Session, name: str | None) -> SourcePlatform | None:
+    if not name:
+        return None
+    return db.scalar(select(SourcePlatform).where(SourcePlatform.name.ilike(name)))
+
+
+def _try_auto_create_character(db: Session, hint: CharacterHint) -> Character | None:
+    """
+    Auto-create a character when:
+    - The hint has a series name from a reliable source (e.g. Pixiv tags)
+    - That series already exists in the knowledge graph
+    - The character does not already exist (checked with name variants)
+    Returns the created character, or None if conditions not met.
+    """
+    if not hint.series:
+        return None
+    series = _find_series_by_name(db, hint.series)
+    if not series:
+        return None
+    # Check all name variants before creating to prevent duplicates
+    existing = _find_character_by_name(db, hint.name)
+    if existing:
+        return existing
+    new_character = Character(name=hint.name, series_id=series.id)
+    db.add(new_character)
+    db.flush()
+    return new_character
+
+
+# ── Graph matching ─────────────────────────────────────────────────────────────
+
+def _match_graph_entities(
+    db: Session, context_text: str
+) -> tuple[list[dict], list[dict], dict | None]:
     characters: list[dict] = []
     artists: list[dict] = []
     publication_platform: dict | None = None
 
     for character in db.execute(select(Character)).scalars().all():
-        if _contains_phrase(context_text, character.name):
-            characters.append({"name": character.name, "character_id": character.id, "confidence": 0.85, "source": "graph"})
+        # Try both name orderings against the context text
+        for variant in _name_variants(character.name):
+            if _contains_phrase(context_text, variant):
+                characters.append({
+                    "name": character.name,
+                    "character_id": character.id,
+                    "confidence": 0.85,
+                    "source": "graph",
+                })
+                break  # Don't add same character twice
 
     for artist in db.execute(select(Artist)).scalars().all():
         if _contains_phrase(context_text, artist.name):
-            artists.append({"name": artist.name, "artist_id": artist.id, "confidence": 0.75, "source": "graph"})
+            artists.append({
+                "name": artist.name,
+                "artist_id": artist.id,
+                "confidence": 0.75,
+                "source": "graph",
+            })
 
     for platform in db.execute(select(SourcePlatform)).scalars().all():
         if _contains_phrase(context_text, platform.name):
@@ -91,6 +174,8 @@ def _match_graph_entities(db: Session, context_text: str) -> tuple[list[dict], l
 
     return characters, artists, publication_platform
 
+
+# ── Routing ────────────────────────────────────────────────────────────────────
 
 def _route_pending_categories(tags: dict) -> list[str]:
     pending_categories: list[str] = []
@@ -127,7 +212,11 @@ def _route_pending_categories(tags: dict) -> list[str]:
     return pending_categories
 
 
-def _replace_pending(db: Session, artwork_id: int, tags: dict, pending_categories: list[str]) -> None:
+# ── Pending tag management ─────────────────────────────────────────────────────
+
+def _replace_pending(
+    db: Session, artwork_id: int, tags: dict, pending_categories: list[str]
+) -> None:
     db.query(ArtworkPendingTag).where(ArtworkPendingTag.artwork_id == artwork_id).delete()
     for category in pending_categories:
         suggestion = None
@@ -141,10 +230,18 @@ def _replace_pending(db: Session, artwork_id: int, tags: dict, pending_categorie
             suggestion = tags["content_rating"]
         elif category == "art_type":
             suggestion = tags["art_type"]
-        db.add(ArtworkPendingTag(artwork_id=artwork_id, tag_category=category, suggestion=suggestion))
+        db.add(ArtworkPendingTag(
+            artwork_id=artwork_id,
+            tag_category=category,
+            suggestion=suggestion,
+        ))
 
 
-def _replace_artwork_characters(db: Session, artwork_id: int, characters: list[dict]) -> list[str]:
+# ── Junction table management ──────────────────────────────────────────────────
+
+def _replace_artwork_characters(
+    db: Session, artwork_id: int, characters: list[dict]
+) -> list[str]:
     db.query(ArtworkCharacter).where(ArtworkCharacter.artwork_id == artwork_id).delete()
     ids = []
     for item in characters:
@@ -152,10 +249,19 @@ def _replace_artwork_characters(db: Session, artwork_id: int, characters: list[d
         if cid is None:
             continue
         ids.append(cid)
-        db.add(ArtworkCharacter(artwork_id=artwork_id, character_id=cid, confidence=item["confidence"], is_manual=False))
+        db.add(ArtworkCharacter(
+            artwork_id=artwork_id,
+            character_id=cid,
+            confidence=item["confidence"],
+            is_manual=False,
+        ))
     if not ids:
         return []
-    rows = db.execute(select(Series.name).join(Character, Character.series_id == Series.id).where(Character.id.in_(ids))).all()
+    rows = db.execute(
+        select(Series.name)
+        .join(Character, Character.series_id == Series.id)
+        .where(Character.id.in_(ids))
+    ).all()
     return sorted({name for (name,) in rows})
 
 
@@ -167,22 +273,15 @@ def _replace_artwork_artists(db: Session, artwork_id: int, artists: list[dict]) 
         aid = item.get("artist_id")
         if aid is None:
             continue
-        db.add(ArtworkArtist(artwork_id=artwork_id, artist_id=aid, confidence=item["confidence"], is_manual=False))
+        db.add(ArtworkArtist(
+            artwork_id=artwork_id,
+            artist_id=aid,
+            confidence=item["confidence"],
+            is_manual=False,
+        ))
 
 
-def _find_character_by_name(db: Session, name: str) -> Character | None:
-    return db.scalar(select(Character).where(Character.name.ilike(name)))
-
-
-def _find_artist_by_name(db: Session, name: str) -> Artist | None:
-    return db.scalar(select(Artist).where(Artist.name.ilike(name)))
-
-
-def _find_platform_by_name(db: Session, name: str | None) -> SourcePlatform | None:
-    if not name:
-        return None
-    return db.scalar(select(SourcePlatform).where(SourcePlatform.name.ilike(name)))
-
+# ── Main enrichment pipeline ───────────────────────────────────────────────────
 
 def run_enrichment(
     db: Session,
@@ -213,86 +312,150 @@ def run_enrichment(
             continue
 
         context = sidecar.get("platform_context") or {}
+        source_platform_name = sidecar.get("source_platform", "")
+        is_pixiv = source_platform_name.lower() == "pixiv"
 
-        # Build text blob from all available context fields — platform-agnostic.
+        # Build text blob from all available context fields — platform-agnostic
         text_blob = " ".join(filter(None, [
             str(context.get("subreddit") or ""),
             str(context.get("title") or ""),
             str(context.get("flair") or ""),
             str(context.get("content") or ""),
             str(context.get("author") or ""),
+            " ".join(context.get("tags") or []) if is_pixiv else "",
         ]))
 
         graph_characters, graph_artists, publication_platform = _match_graph_entities(db, text_blob)
 
+        # Select the right text provider for this platform
+        effective_text_provider = text_provider
+        if is_pixiv:
+            pixiv_provider_name = settings.enrichment_pixiv_text_provider
+            if pixiv_provider_name and pixiv_provider_name.lower() != "none":
+                effective_text_provider = get_text_provider(pixiv_provider_name)
+
         try:
-            extraction = text_provider.extract(
-                subreddit=str(context.get("subreddit") or ""),
+            extraction = effective_text_provider.extract(
+                subreddit=str(context.get("subreddit") or " ".join(context.get("tags") or [])),
                 title=str(context.get("title") or context.get("content") or ""),
                 flair=str(context.get("flair") or ""),
-                already_identified={"characters": [c["name"] for c in graph_characters], "artists": [a["name"] for a in graph_artists]},
+                already_identified={
+                    "characters": [c["name"] for c in graph_characters],
+                    "artists": [a["name"] for a in graph_artists],
+                },
             )
         except Exception:
             if settings.enrichment_strict_providers:
                 raise
             extraction = get_text_provider("none").extract("", "", "", {})
 
-        # Merge graph matches with SLM extractions — characters
+        # ── Merge characters ───────────────────────────────────────────────────
         characters = list(graph_characters)
-        known_character_names = {c["name"].lower() for c in characters}
-        for name in extraction.characters:
-            if not name or name.lower() in known_character_names:
-                continue
-            matched = _find_character_by_name(db, name)
-            characters.append(
-                {
-                    "name": name,
-                    "character_id": matched.id if matched else None,
-                    "confidence": 0.65,
-                    "source": "slm",
-                }
-            )
+        known_character_names: set[str] = set()
+        for c in characters:
+            for v in _name_variants(c["name"]):
+                known_character_names.add(v.lower())
 
-        # Merge graph matches with SLM extractions — artists
+        for hint in extraction.characters:
+            if not hint.name:
+                continue
+            already_known = any(
+                v.lower() in known_character_names
+                for v in _name_variants(hint.name)
+            )
+            if already_known:
+                continue
+
+            matched = _find_character_by_name(db, hint.name)
+
+            if matched:
+                characters.append({
+                    "name": matched.name,
+                    "character_id": matched.id,
+                    "confidence": 0.75,
+                    "source": "slm",
+                })
+                for v in _name_variants(matched.name):
+                    known_character_names.add(v.lower())
+            else:
+                # Try auto-create for Pixiv when series hint is reliable
+                auto_created = None
+                if is_pixiv and hint.series:
+                    auto_created = _try_auto_create_character(db, hint)
+
+                if auto_created:
+                    characters.append({
+                        "name": auto_created.name,
+                        "character_id": auto_created.id,
+                        "confidence": 0.75,
+                        "source": "slm",
+                    })
+                    for v in _name_variants(auto_created.name):
+                        known_character_names.add(v.lower())
+                else:
+                    characters.append({
+                        "name": hint.name,
+                        "character_id": None,
+                        "confidence": 0.65,
+                        "source": "slm",
+                        "series_hint": hint.series,
+                    })
+                    for v in _name_variants(hint.name):
+                        known_character_names.add(v.lower())
+
+        # ── Merge artists ──────────────────────────────────────────────────────
         artists = list(graph_artists)
         known_artist_names = {a["name"].lower() for a in artists}
+
         for name in extraction.artists:
             if not name or name.lower() in known_artist_names:
                 continue
             matched_artist = _find_artist_by_name(db, name)
-            artists.append(
-                {
-                    "name": name,
-                    "artist_id": matched_artist.id if matched_artist else None,
-                    "confidence": 0.70,
-                    "source": "slm",
-                }
-            )
+            artists.append({
+                "name": name,
+                "artist_id": matched_artist.id if matched_artist else None,
+                "confidence": 0.70,
+                "source": "slm",
+            })
+            known_artist_names.add(name.lower())
+
         if publication_platform is None and extraction.source_platform:
             matched_platform = _find_platform_by_name(db, extraction.source_platform)
+            # If SLM identified the same platform as ingestion source, it's reliable
+            conf = 0.90 if (matched_platform and platform_row and matched_platform.id == platform_row.id) else 0.75
             publication_platform = {
                 "name": extraction.source_platform,
                 "platform_id": matched_platform.id if matched_platform else None,
-                "confidence": 0.75,
+                "confidence": conf,
                 "source": "slm",
             }
 
-        # Platform-agnostic author auto-tagging.
-        # Any platform that puts an "author" field in platform_context gets automatic
-        # artist suggestion — Twitter, Reddit, Pixiv, all handled the same way.
+        # ── Platform-agnostic author auto-tagging ──────────────────────────────
         context_author = str(context.get("author") or "").strip()
         if context_author and context_author.lower() not in known_artist_names:
             matched_artist = _find_artist_by_name(db, context_author)
             artists.append({
                 "name": context_author,
                 "artist_id": matched_artist.id if matched_artist else None,
-                # Known artists get graph confidence, unknown go to review
                 "confidence": 0.85 if matched_artist else 0.80,
                 "source": "graph" if matched_artist else "slm",
             })
             known_artist_names.add(context_author.lower())
 
-        # Ensure ingestion source platform is recorded on artwork
+        # ── Pixiv metadata signals ─────────────────────────────────────────────
+        x_restrict = int(context.get("x_restrict", 0))
+        sanity_level = int(context.get("sanity_level", 2))
+        illust_ai_type = int(context.get("illust_ai_type", 0))
+        illust_type = str(context.get("type") or "")
+
+        pixiv_art_type: str | None = None
+        if is_pixiv:
+            if illust_ai_type == 2:
+                pixiv_art_type = "AI Generated"
+            elif illust_type in {"illust", "manga", "ugoira"}:
+                pixiv_art_type = "Artwork"
+
+        # ── Source platform ────────────────────────────────────────────────────
         platform_name = sidecar.get("source_platform")
         platform_row = _get_or_create_platform(db, platform_name)
         if artwork.source_platform_id is None and platform_row:
@@ -305,37 +468,85 @@ def run_enrichment(
             artwork.publication_platform_confidence = 1.0
             artwork.publication_platform_is_manual = False
 
-        # Content rating — use sensitive flag from platform_context as NSFW prior
+        # For Pixiv, publication platform is always Pixiv with certainty —
+        # set it in the tags dict so routing doesn't flag it as pending
+        if is_pixiv and platform_row and publication_platform is None:
+            publication_platform = {
+                "name": platform_row.name,
+                "platform_id": platform_row.id,
+                "confidence": 1.0,
+                "source": "pixiv_metadata",
+            }
+
+        # ── Content rating ─────────────────────────────────────────────────────
         subreddit = str(context.get("subreddit") or "").lower()
         platform_sensitive = bool(context.get("sensitive", False))
-        is_nsfw_context = platform_sensitive or any(
+        pixiv_is_nsfw = is_pixiv and (x_restrict >= 1 or sanity_level >= 6)
+        is_nsfw_context = platform_sensitive or pixiv_is_nsfw or any(
             flag in subreddit for flag in ("nsfw", "hentai", "rule34")
         )
-        try:
-            content_result = content_provider.classify(media_path, subreddit_is_nsfw=is_nsfw_context)
-        except Exception:
-            if settings.enrichment_strict_providers:
-                raise
-            content_result = get_content_provider("none").classify(media_path, subreddit_is_nsfw=False)
 
-        try:
-            art_type_result = art_type_provider.classify(media_path)
-        except Exception:
-            if settings.enrichment_strict_providers:
-                raise
-            art_type_result = get_art_type_provider("none").classify(media_path)
-        content_rating = {"value": content_result.value, "confidence": content_result.confidence, "source": content_result.source}
-        art_type = {"value": art_type_result.value, "confidence": art_type_result.confidence, "source": art_type_result.source}
+        if is_pixiv and x_restrict >= 1:
+            content_result_val: str | None = "NSFW"
+            content_result_conf = 0.95 if x_restrict == 1 else 1.0
+            content_result_src = "pixiv_metadata"
+        elif is_pixiv and x_restrict == 0 and sanity_level <= 2:
+            content_result_val = "SFW"
+            content_result_conf = 0.90
+            content_result_src = "pixiv_metadata"
+        else:
+            try:
+                cr = content_provider.classify(media_path, subreddit_is_nsfw=is_nsfw_context)
+                content_result_val = cr.value
+                content_result_conf = cr.confidence
+                content_result_src = cr.source
+            except Exception:
+                if settings.enrichment_strict_providers:
+                    raise
+                cr = get_content_provider("none").classify(media_path, subreddit_is_nsfw=False)
+                content_result_val = cr.value
+                content_result_conf = cr.confidence
+                content_result_src = cr.source
 
-        tags = {
+        # ── Art type ───────────────────────────────────────────────────────────
+        if is_pixiv and pixiv_art_type:
+            art_type_val: str | None = pixiv_art_type
+            art_type_conf = 0.95
+            art_type_src = "pixiv_metadata"
+        else:
+            try:
+                at = art_type_provider.classify(media_path)
+                art_type_val = at.value
+                art_type_conf = at.confidence
+                art_type_src = at.source
+            except Exception:
+                if settings.enrichment_strict_providers:
+                    raise
+                at = get_art_type_provider("none").classify(media_path)
+                art_type_val = at.value
+                art_type_conf = at.confidence
+                art_type_src = at.source
+
+        content_rating = {
+            "value": content_result_val,
+            "confidence": content_result_conf,
+            "source": content_result_src,
+        }
+        art_type = {
+            "value": art_type_val,
+            "confidence": art_type_conf,
+            "source": art_type_src,
+        }
+
+        tags_dict = {
             "characters": characters,
             "artists": artists,
             "publication_platform": publication_platform,
             "content_rating": content_rating,
             "art_type": art_type,
         }
-        pending_categories = _route_pending_categories(tags)
-        _replace_pending(db, artwork.id, tags, pending_categories)
+        pending_categories = _route_pending_categories(tags_dict)
+        _replace_pending(db, artwork.id, tags_dict, pending_categories)
 
         artwork.content_rating = content_rating["value"] if content_rating["value"] in {"SFW", "Suggestive", "NSFW"} else None
         artwork.content_rating_confidence = content_rating["confidence"]
@@ -353,7 +564,10 @@ def run_enrichment(
         _replace_artwork_artists(db, artwork.id, artists)
 
         artwork.status = "pending_review" if pending_categories else "gallery"
-        destination = resolve_review_destination(settings.archive_root, series_names if artwork.status == "gallery" else [])
+        destination = resolve_review_destination(
+            settings.archive_root,
+            series_names if artwork.status == "gallery" else [],
+        )
         destination.mkdir(parents=True, exist_ok=True)
         final_media = destination / media_path.name
 
@@ -385,13 +599,14 @@ def run_enrichment(
     return stats
 
 
+# ── Re-enrichment ──────────────────────────────────────────────────────────────
+
 def run_re_enrichment(db: Session) -> dict:
     """
     Re-runs graph matching on all pending_review artworks.
     Auto-resolves tag categories that now meet AUTO_TAG_MINIMUM
     after new characters/series/artists have been added to the knowledge graph.
-    Only re-evaluates character, artist, and source_platform — skips
-    content_rating and art_type since those are set by vision providers.
+    Only re-evaluates character, artist, and source_platform.
     """
     stats = {"processed": 0, "resolved": 0, "still_pending": 0}
 
@@ -410,12 +625,16 @@ def run_re_enrichment(db: Session) -> dict:
             continue
 
         context = artwork.platform_context or {}
+        source_platform = db.get(SourcePlatform, artwork.source_platform_id)
+        is_pixiv = source_platform and source_platform.name.lower() == "pixiv"
+
         text_blob = " ".join(filter(None, [
             str(context.get("subreddit") or ""),
             str(context.get("title") or ""),
             str(context.get("flair") or ""),
             str(context.get("content") or ""),
             str(context.get("author") or ""),
+            " ".join(context.get("tags") or []) if is_pixiv else "",
         ]))
 
         graph_characters, graph_artists, publication_platform = _match_graph_entities(db, text_blob)

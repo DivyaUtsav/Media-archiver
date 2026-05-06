@@ -6,12 +6,17 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Artwork, ArtworkPendingTag, Artist, Character, Series, SourcePlatform
 from app.services.enrichment import run_enrichment
-from app.services.enrichment_providers import ArtTypeResult, ContentRatingResult, TextExtractionResult
+from app.services.enrichment_providers import ArtTypeResult, ContentRatingResult, TextExtractionResult, CharacterHint
 
 
 class FakeTextProvider:
     def __init__(self, characters=None, artists=None, source_platform=None):
-        self.characters = characters or []
+        # Accept both strings and CharacterHint objects for flexibility
+        raw = characters or []
+        self.characters = [
+            c if isinstance(c, CharacterHint) else CharacterHint(name=c, series=None)
+            for c in raw
+        ]
         self.artists = artists or []
         self.source_platform = source_platform
 

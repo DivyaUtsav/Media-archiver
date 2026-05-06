@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     enrichment_text_provider: str = "none"
     enrichment_content_provider: str = "none"
     enrichment_art_type_provider: str = "none"
+    enrichment_pixiv_text_provider: str = "ollama_pixiv"
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_text_model: str = "qwen2.5:7b-instruct-q4_K_M"
     ollama_vision_model: str = "llava-phi3"
