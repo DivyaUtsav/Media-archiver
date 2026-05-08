@@ -76,12 +76,13 @@ def list_artworks(
     artist_id: list[int] | None = Query(default=None),
     content_rating: list[str] | None = Query(default=None),
     art_type: list[str] | None = Query(default=None),
+    search: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ) -> ArtworkListResponse:
     stmt = select(Artwork).where(Artwork.status == "gallery")
-    if series_id or character_id:
-        stmt = stmt.join(ArtworkCharacter, ArtworkCharacter.artwork_id == Artwork.id).join(
-            Character, Character.id == ArtworkCharacter.character_id
+    if series_id or character_id or search:
+        stmt = stmt.join(ArtworkCharacter, ArtworkCharacter.artwork_id == Artwork.id, isouter=True).join(
+            Character, Character.id == ArtworkCharacter.character_id, isouter=True
         )
     if series_id:
         stmt = stmt.join(Series, Series.id == Character.series_id).where(Series.id.in_(series_id))
@@ -93,6 +94,19 @@ def list_artworks(
         stmt = stmt.where(Artwork.content_rating.in_(content_rating))
     if art_type:
         stmt = stmt.where(Artwork.art_type.in_(art_type))
+    if search:
+        pattern = f"%{search}%"
+        stmt = (
+            stmt
+            .join(Series, Series.id == Character.series_id, isouter=True)
+            .join(ArtworkArtist, ArtworkArtist.artwork_id == Artwork.id, isouter=True)
+            .join(Artist, Artist.id == ArtworkArtist.artist_id, isouter=True)
+            .where(
+                Character.name.ilike(pattern)
+                | Series.name.ilike(pattern)
+                | Artist.name.ilike(pattern)
+            )
+        )
     stmt = stmt.distinct()
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0

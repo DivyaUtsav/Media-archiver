@@ -17,5 +17,7 @@ expect fun FilterContainer(
     availableArtists: List<com.mediaarchive.data.api.ArtistDto>,
     availableContentRatings: List<String>,
     availableArtTypes: List<String>,
+    seriesCharacters: Map<Int, List<com.mediaarchive.data.api.CharacterDto>> = emptyMap(),
+    onSeriesExpanded: (Int) -> Unit = {},
     content: @Composable () -> Unit,
 )

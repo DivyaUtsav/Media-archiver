@@ -21,6 +21,8 @@ actual fun FilterContainer(
     availableArtists: List<com.mediaarchive.data.api.ArtistDto>,
     availableContentRatings: List<String>,
     availableArtTypes: List<String>,
+    seriesCharacters: Map<Int, List<com.mediaarchive.data.api.CharacterDto>>,
+    onSeriesExpanded: (Int) -> Unit,
     content: @Composable () -> Unit,
 ) {
     Row(modifier = Modifier.fillMaxSize()) {
@@ -41,6 +43,8 @@ actual fun FilterContainer(
                 availableArtists = availableArtists,
                 availableContentRatings = availableContentRatings,
                 availableArtTypes = availableArtTypes,
+                seriesCharacters = seriesCharacters,
+                onSeriesExpanded = onSeriesExpanded,
             )
         }
 

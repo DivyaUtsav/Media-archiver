@@ -58,12 +58,16 @@ fun App() {
                     onArtistClick = { artistId ->
                         galleryViewModel.updateFilters(com.mediaarchive.viewmodel.GalleryFilters(artistIds = listOf(artistId)))
                         navController.popBackStack()
+                    },
+                    onSeriesClick = { seriesId ->
+                        galleryViewModel.filterBySeries(seriesId)
+                        navController.popBackStack()
                     }
                 )
             }
 
             composable<QueueRoute> {
-                val vm = remember { ReviewQueueViewModel(api) }
+                val vm = viewModel { ReviewQueueViewModel(api) }
                 ReviewQueueScreen(viewModel = vm, onBack = { navController.popBackStack() })
             }
 

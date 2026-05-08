@@ -8,6 +8,8 @@ import com.mediaarchive.data.api.SeriesDto
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 
 data class GalleryFilters(
     val seriesIds: List<Int> = emptyList(),
@@ -15,7 +17,12 @@ data class GalleryFilters(
     val artistIds: List<Int> = emptyList(),
     val contentRatings: List<String> = emptyList(),
     val artTypes: List<String> = emptyList(),
+    val expandedSeriesIds: Set<Int> = emptySet(),
+    val search: String = "",
 )
+
+val AvailableContentRatings = listOf("SFW", "Suggestive", "NSFW")
+val AvailableArtTypes = listOf("Artwork", "Cosplay", "AI Generated")
 
 data class GalleryState(
     val artworks: List<ArtworkSummaryDto> = emptyList(),
@@ -26,6 +33,7 @@ data class GalleryState(
     val filters: GalleryFilters = GalleryFilters(),
     val availableSeries: List<SeriesDto> = emptyList(),
     val availableArtists: List<com.mediaarchive.data.api.ArtistDto> = emptyList(),
+    val seriesCharacters: Map<Int, List<com.mediaarchive.data.api.CharacterDto>> = emptyMap(),
     val queueCount: Int = 0,
     val error: String? = null,
     val selectionMode: Boolean = false,
@@ -33,8 +41,6 @@ data class GalleryState(
     val isBulkUpdating: Boolean = false,
     val bulkUpdateError: String? = null,
 ) {
-    val availableContentRatings = listOf("SFW", "Suggestive", "NSFW")
-    val availableArtTypes = listOf("Artwork", "Cosplay", "AI Generated")
 }
 
 class GalleryViewModel(private val api: ApiClient) : ViewModel() {
@@ -50,27 +56,37 @@ class GalleryViewModel(private val api: ApiClient) : ViewModel() {
         viewModelScope.launch {
             _state.value = _state.value.copy(isLoading = true, error = null, artworks = emptyList(), currentPage = 1, hasMore = true)
             try {
-                val seriesResult = api.getSeries()
-                val artistResult = api.getArtists()
                 val f = _state.value.filters
-                val page = api.getArtworks(
-                    page = 1,
-                    seriesIds = f.seriesIds,
-                    characterIds = f.characterIds,
-                    artistIds = f.artistIds,
-                    contentRatings = f.contentRatings,
-                    artTypes = f.artTypes,
-                )
-                val queueCount = api.getQueueCount()
-                _state.value = _state.value.copy(
-                    isLoading = false,
-                    artworks = page.items,
-                    currentPage = 1,
-                    hasMore = page.items.size < page.total,
-                    availableSeries = seriesResult.items,
-                    availableArtists = artistResult.items,
-                    queueCount = queueCount.count,
-                )
+                coroutineScope {
+                    val seriesDeferred = async { api.getSeries() }
+                    val artistDeferred = async { api.getArtists() }
+                    val pageDeferred = async {
+                        api.getArtworks(
+                            page = 1,
+                            seriesIds = f.seriesIds,
+                            characterIds = f.characterIds,
+                            artistIds = f.artistIds,
+                            contentRatings = f.contentRatings,
+                            artTypes = f.artTypes,
+                            search = f.search,
+                        )
+                    }
+                    val queueDeferred = async { api.getQueueCount() }
+
+                    val seriesResult = seriesDeferred.await()
+                    val artistResult = artistDeferred.await()
+                    val page = pageDeferred.await()
+                    val queueCount = queueDeferred.await()
+                    _state.value = _state.value.copy(
+                        isLoading = false,
+                        artworks = page.items,
+                        currentPage = 1,
+                        hasMore = page.items.size < page.total,
+                        availableSeries = seriesResult.items,
+                        availableArtists = artistResult.items,
+                        queueCount = queueCount.count,
+                    )
+                }
             } catch (e: Exception) {
                 _state.value = _state.value.copy(isLoading = false, error = e.message)
             }
@@ -92,6 +108,7 @@ class GalleryViewModel(private val api: ApiClient) : ViewModel() {
                     artistIds = f.artistIds,
                     contentRatings = f.contentRatings,
                     artTypes = f.artTypes,
+                    search = f.search,
                 )
                 _state.value = _state.value.copy(
                     isLoadingMore = false,
@@ -107,6 +124,37 @@ class GalleryViewModel(private val api: ApiClient) : ViewModel() {
 
     fun updateFilters(filters: GalleryFilters) {
         _state.value = _state.value.copy(filters = filters)
+        loadInitial()
+    }
+
+    fun toggleSeriesExpanded(seriesId: Int) {
+        val current = _state.value.filters
+        val expanded = current.expandedSeriesIds
+        val newExpanded = if (seriesId in expanded) expanded - seriesId else expanded + seriesId
+        _state.value = _state.value.copy(filters = current.copy(expandedSeriesIds = newExpanded))
+        if (seriesId !in expanded && seriesId !in _state.value.seriesCharacters) {
+            loadSeriesCharacters(seriesId)
+        }
+    }
+
+    fun updateSearch(query: String) {
+        _state.value = _state.value.copy(filters = _state.value.filters.copy(search = query))
+    }
+
+    private fun loadSeriesCharacters(seriesId: Int) {
+        viewModelScope.launch {
+            runCatching { api.getSeriesCharacters(seriesId) }.onSuccess { result ->
+                _state.value = _state.value.copy(
+                    seriesCharacters = _state.value.seriesCharacters + (seriesId to result.characters)
+                )
+            }
+        }
+    }
+
+    fun filterBySeries(seriesId: Int) {
+        _state.value = _state.value.copy(
+            filters = GalleryFilters(seriesIds = listOf(seriesId))
+        )
         loadInitial()
     }
 
@@ -152,6 +200,25 @@ class GalleryViewModel(private val api: ApiClient) : ViewModel() {
                 api.bulkUpdateTags(request)
                 _state.value = _state.value.copy(isBulkUpdating = false, selectionMode = false, selectedArtworkIds = emptySet())
                 loadInitial()
+                onSuccess()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(isBulkUpdating = false, bulkUpdateError = e.message)
+            }
+        }
+    }
+
+    fun bulkDelete(onSuccess: () -> Unit) {
+        val ids = _state.value.selectedArtworkIds.toList()
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isBulkUpdating = true, bulkUpdateError = null)
+            try {
+                ids.forEach { api.deleteArtwork(it) }
+                _state.value = _state.value.copy(
+                    isBulkUpdating = false,
+                    selectionMode = false,
+                    selectedArtworkIds = emptySet(),
+                    artworks = _state.value.artworks.filter { it.id !in ids },
+                )
                 onSuccess()
             } catch (e: Exception) {
                 _state.value = _state.value.copy(isBulkUpdating = false, bulkUpdateError = e.message)

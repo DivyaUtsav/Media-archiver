@@ -13,6 +13,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.mediaarchive.ui.theme.Surface600
 import com.mediaarchive.ui.theme.Surface700
+import com.mediaarchive.ui.onEscapeKey
+import com.mediaarchive.ui.theme.AccentTeal
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 
 /**
  * Text field with a live-updated dropdown of results.
@@ -28,13 +33,17 @@ fun <T> SearchableDropdown(
     itemLabel: (T) -> String,
     modifier: Modifier = Modifier,
     onCreateNew: ((String) -> Unit)? = null,
+    highlightedIndex: Int = -1,
+    focusRequester: FocusRequester? = null,
 ) {
     Column(modifier = modifier) {
         OutlinedTextField(
             value = query,
             onValueChange = onQueryChange,
             label = { Text(label) },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth()
+                .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+                .onEscapeKey { onQueryChange("") },
             singleLine = true,
         )
 
@@ -47,14 +56,18 @@ fun <T> SearchableDropdown(
                 tonalElevation = 4.dp,
             ) {
                 LazyColumn(modifier = Modifier.heightIn(max = 200.dp)) {
-                    items(results) { item ->
+                    items(results.size) { index ->
+                        val item = results[index]
+                        val isHighlighted = index == highlightedIndex
                         Text(
                             text = itemLabel(item),
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .background(if (isHighlighted) AccentTeal.copy(alpha = 0.2f) else Color.Transparent)
                                 .clickable { onSelect(item) }
                                 .padding(horizontal = 16.dp, vertical = 10.dp),
                             style = MaterialTheme.typography.bodyMedium,
+                            color = if (isHighlighted) AccentTeal else MaterialTheme.colorScheme.onSurface,
                         )
                         HorizontalDivider(color = Surface600, thickness = 0.5.dp)
                     }

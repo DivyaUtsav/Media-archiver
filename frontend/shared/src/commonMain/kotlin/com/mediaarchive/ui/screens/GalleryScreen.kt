@@ -4,8 +4,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -14,10 +18,16 @@ import androidx.compose.ui.unit.dp
 import com.mediaarchive.data.AppContainer
 import com.mediaarchive.ui.FilterContainer
 import com.mediaarchive.ui.components.ArtworkCard
+import com.mediaarchive.ui.onEscapeKey
+import com.mediaarchive.ui.onEnterOrEscape
 import com.mediaarchive.ui.theme.AccentTeal
 import com.mediaarchive.ui.theme.RatingNSFW
 import com.mediaarchive.viewmodel.GalleryFilters
 import com.mediaarchive.viewmodel.GalleryViewModel
+import com.mediaarchive.viewmodel.AvailableArtTypes
+import com.mediaarchive.viewmodel.AvailableContentRatings
+import kotlinx.coroutines.delay
+
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -29,6 +39,15 @@ fun GalleryScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val gridState = rememberLazyGridState()
+
+    var searchQuery by remember { mutableStateOf("") }
+    var searchActive by remember { mutableStateOf(false) }
+
+    LaunchedEffect(searchQuery) {
+        delay(300)
+        viewModel.updateSearch(searchQuery)
+        viewModel.loadInitial()
+    }
 
     // Pagination trigger — load more when near the end
     LaunchedEffect(gridState.firstVisibleItemIndex, gridState.layoutInfo.totalItemsCount) {
@@ -42,19 +61,28 @@ fun GalleryScreen(
         onFiltersChanged = viewModel::updateFilters,
         availableSeries = state.availableSeries,
         availableArtists = state.availableArtists,
-        availableContentRatings = state.availableContentRatings,
-        availableArtTypes = state.availableArtTypes,
+        availableContentRatings = AvailableContentRatings,
+        availableArtTypes = AvailableArtTypes,
+        seriesCharacters = state.seriesCharacters,
+        onSeriesExpanded = viewModel::toggleSeriesExpanded,
     ) {
         var showBulkEditDialog by remember { mutableStateOf(false) }
+        var showBulkDeleteConfirm by remember { mutableStateOf(false) }
 
         Scaffold(
+            modifier = Modifier.onEscapeKey {
+                when {
+                    searchActive -> { searchActive = false; searchQuery = "" }
+                    state.selectionMode -> viewModel.clearSelection()
+                }
+            },
             topBar = {
                 if (state.selectionMode) {
                     TopAppBar(
                         title = { Text("${state.selectedArtworkIds.size} selected") },
                         navigationIcon = {
                             IconButton(onClick = viewModel::clearSelection) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Clear") // Using refresh as a clear icon for now
+                                Icon(Icons.Default.Close, contentDescription = "Clear selection") // Using refresh as a clear icon for now
                             }
                         },
                         actions = {
@@ -64,9 +92,20 @@ fun GalleryScreen(
                             Button(
                                 onClick = { showBulkEditDialog = true },
                                 enabled = state.selectedArtworkIds.isNotEmpty(),
-                                modifier = Modifier.padding(end = 8.dp)
+                                modifier = Modifier.padding(end = 4.dp)
                             ) {
                                 Text("Edit Tags")
+                            }
+                            IconButton(
+                                onClick = { showBulkDeleteConfirm = true },
+                                enabled = state.selectedArtworkIds.isNotEmpty(),
+                            ) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = "Delete selected",
+                                    tint = if (state.selectedArtworkIds.isNotEmpty()) MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         },
                         colors = TopAppBarDefaults.topAppBarColors(
@@ -76,8 +115,37 @@ fun GalleryScreen(
                     )
                 } else {
                     TopAppBar(
-                        title = { Text("Archive", style = MaterialTheme.typography.titleLarge) },
+                        title = {
+                            if (searchActive) {
+                                OutlinedTextField(
+                                    value = searchQuery,
+                                    onValueChange = { searchQuery = it },
+                                    placeholder = { Text("Search artworks…") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth().padding(end = 8.dp),
+                                    textStyle = MaterialTheme.typography.bodyMedium,
+                                    trailingIcon = {
+                                        if (searchQuery.isNotEmpty()) {
+                                            IconButton(onClick = { searchQuery = "" }) {
+                                                Icon(Icons.Default.Clear, contentDescription = "Clear search")
+                                            }
+                                        }
+                                    },
+                                )
+                            } else {
+                                Text("Archive", style = MaterialTheme.typography.titleLarge)
+                            }
+                        },
                         actions = {
+                            IconButton(onClick = {
+                                searchActive = !searchActive
+                                if (!searchActive) searchQuery = ""
+                            }) {
+                                Icon(
+                                    if (searchActive) Icons.Default.Clear else Icons.Default.Search,
+                                    contentDescription = if (searchActive) "Close search" else "Search",
+                                )
+                            }
                             // Queue badge
                             IconButton(onClick = onQueueClick) {
                                 BadgedBox(badge = {
@@ -179,6 +247,41 @@ fun GalleryScreen(
                     saveError = state.bulkUpdateError
                 )
             }
+
+            if (showBulkDeleteConfirm) {
+                AlertDialog(
+                    onDismissRequest = { if (!state.isBulkUpdating) showBulkDeleteConfirm = false },
+                    modifier = Modifier.onEnterOrEscape(
+                        onEnter = { if (!state.isBulkUpdating) viewModel.bulkDelete(onSuccess = { showBulkDeleteConfirm = false }) },
+                        onEscape = { if (!state.isBulkUpdating) showBulkDeleteConfirm = false },
+                    ),
+                    title = { Text("Delete ${state.selectedArtworkIds.size} artworks?") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("This will permanently delete the selected artworks and their files. This cannot be undone.")
+                            state.bulkUpdateError?.let {
+                                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = { viewModel.bulkDelete(onSuccess = { showBulkDeleteConfirm = false }) },
+                            enabled = !state.isBulkUpdating,
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        ) {
+                            if (state.isBulkUpdating) CircularProgressIndicator(modifier = Modifier.size(16.dp))
+                            else Text("Delete")
+                        }
+                    },
+                    dismissButton = {
+                        OutlinedButton(
+                            onClick = { showBulkDeleteConfirm = false },
+                            enabled = !state.isBulkUpdating,
+                        ) { Text("Cancel") }
+                    }
+                )
+            }
         }
     }
 }
@@ -203,16 +306,18 @@ fun BulkEditDialog(
 
     LaunchedEffect(characterQuery) {
         if (characterQuery.length >= 2) {
+            delay(300)
             runCatching { api.searchCharacters(characterQuery) }.onSuccess {
                 characterResults = it.items.map { c ->
                     com.mediaarchive.data.api.CharacterTagDto(id = c.id, name = c.name, series = c.series ?: com.mediaarchive.data.api.SeriesDto(0, "Unknown"), confidence = null, isManual = true)
                 }
             }
         } else characterResults = emptyList()
-    }
+}
 
     LaunchedEffect(artistQuery) {
         if (artistQuery.length >= 2) {
+            delay(300)
             runCatching { api.searchArtists(artistQuery) }.onSuccess {
                 artistResults = it.items.map { a -> com.mediaarchive.data.api.ArtistTagDto(id = a.id, name = a.name, confidence = null, isManual = true) }
             }
@@ -231,7 +336,7 @@ fun BulkEditDialog(
 
                 // Rating
                 com.mediaarchive.ui.components.RatingSelector(selected = contentRating, onSelected = { contentRating = it })
-                
+
                 // Art Type
                 com.mediaarchive.ui.components.ArtTypeSelector(selected = artType, onSelected = { artType = it })
 

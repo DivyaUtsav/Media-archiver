@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalUriHandler
 import coil3.compose.AsyncImage
 import com.mediaarchive.data.AppContainer
 import com.mediaarchive.data.api.*
@@ -31,6 +32,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import com.mediaarchive.ui.onEnterOrEscape
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
@@ -39,6 +42,7 @@ fun ArtworkDetailScreen(
     galleryViewModel: com.mediaarchive.viewmodel.GalleryViewModel,
     onBack: () -> Unit,
     onArtistClick: (Int) -> Unit,
+    onSeriesClick: (Int) -> Unit = {},
 ) {
     val galleryState by galleryViewModel.state.collectAsState()
     val initialIndex = remember { galleryState.artworks.indexOfFirst { it.id == initialArtworkId }.coerceAtLeast(0) }
@@ -50,25 +54,26 @@ fun ArtworkDetailScreen(
         }
     }
 
-    androidx.compose.foundation.pager.HorizontalPager(
-        state = pagerState,
-        modifier = Modifier.fillMaxSize(),
-        beyondViewportPageCount = 1,
-    ) { page ->
-        val artwork = galleryState.artworks[page]
-        val vm = remember(artwork.id) { ArtworkDetailViewModel(AppContainer.apiClient, artwork.id) }
-        
-        ArtworkDetailPage(
-            viewModel = vm,
-            onBack = onBack,
-            onDelete = { galleryViewModel.removeArtwork(artwork.id) },
-            onArtistClick = onArtistClick,
-        )
-    }
+    Box(modifier = Modifier.fillMaxSize()) {
+        androidx.compose.foundation.pager.HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.fillMaxSize(),
+            beyondViewportPageCount = 1,
+        ) { page ->
+            val artwork = galleryState.artworks[page]
+            val vm = remember(artwork.id) { ArtworkDetailViewModel(AppContainer.apiClient, artwork.id) }
 
-    if (com.mediaarchive.isDesktop) {
-        val scope = rememberCoroutineScope()
-        Box(modifier = Modifier.fillMaxSize()) {
+            ArtworkDetailPage(
+                viewModel = vm,
+                onBack = onBack,
+                onDelete = { galleryViewModel.removeArtwork(artwork.id) },
+                onArtistClick = onArtistClick,
+                onSeriesClick = onSeriesClick,
+            )
+        }
+
+        if (com.mediaarchive.isDesktop) {
+            val scope = rememberCoroutineScope()
             if (pagerState.currentPage > 0) {
                 IconButton(
                     onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } },
@@ -96,17 +101,20 @@ private fun ArtworkDetailPage(
     onBack: () -> Unit,
     onDelete: () -> Unit,
     onArtistClick: (Int) -> Unit,
+    onSeriesClick: (Int) -> Unit = {},
 ) {
     val state by viewModel.state.collectAsState()
     val scaffoldState = rememberBottomSheetScaffoldState()
-    var isImmersive by remember { mutableStateOf(false) }
+    var isImmersive by remember { mutableStateOf(true) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     BottomSheetScaffold(
         scaffoldState = scaffoldState,
-        sheetPeekHeight = 100.dp,
+        sheetPeekHeight = if (isImmersive) 0.dp else 100.dp,
         sheetContent = {
             Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp).imePadding(),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 if (state.isLoading) {
@@ -127,7 +135,7 @@ private fun ArtworkDetailPage(
                             onCreateArtist = viewModel::createAndAddArtist,
                         )
                     } else {
-                        ReadOnlyTagPanel(state.artwork!!, onArtistClick)
+                        ReadOnlyTagPanel(state.artwork!!, onArtistClick, onSeriesClick)
                     }
                 }
             }
@@ -162,11 +170,13 @@ private fun ArtworkDetailPage(
                     },
                     actions = {
                         if (!state.isEditing) {
-                            var showDeleteConfirm by remember { mutableStateOf(false) }
                             IconButton(onClick = { showDeleteConfirm = true }) {
                                 Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
                             }
-                            IconButton(onClick = viewModel::startEditing) {
+                            IconButton(onClick = {
+                                viewModel.startEditing()
+                                scope.launch { scaffoldState.bottomSheetState.expand() }
+                            }) {
                                 Icon(Icons.Default.Edit, contentDescription = "Edit tags")
                             }
                             if (showDeleteConfirm) {
@@ -201,7 +211,11 @@ private fun ArtworkDetailPage(
 }
 
 @Composable
-private fun ReadOnlyTagPanel(artwork: ArtworkDetailDto, onArtistClick: (Int) -> Unit) {
+private fun ReadOnlyTagPanel(
+    artwork: ArtworkDetailDto,
+    onArtistClick: (Int) -> Unit,
+    onSeriesClick: (Int) -> Unit = {},
+) {
     // Rating + art type row
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         artwork.contentRating?.let { RatingBadge(it) }
@@ -214,8 +228,15 @@ private fun ReadOnlyTagPanel(artwork: ArtworkDetailDto, onArtistClick: (Int) -> 
             Text("Characters", style = MaterialTheme.typography.labelMedium, color = OnSurfaceMuted)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 artwork.characters.forEach { c ->
-                    if (c.isManual) TagChip("${c.name} · ${c.series.name}")
-                    else ConfidenceChip("${c.name} · ${c.series.name}", c.confidence)
+                    if (c.isManual) TagChip(
+                        "${c.name} · ${c.series.name}",
+                        onClick = { onSeriesClick(c.series.id) }
+                    )
+                    else ConfidenceChip(
+                        "${c.name} · ${c.series.name}",
+                        c.confidence,
+                        onClick = { onSeriesClick(c.series.id) }
+                    )
                 }
             }
         }
@@ -236,6 +257,7 @@ private fun ReadOnlyTagPanel(artwork: ArtworkDetailDto, onArtistClick: (Int) -> 
 
     // Source info
     HorizontalDivider(color = Surface700)
+    val uriHandler = LocalUriHandler.current
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text("Source", style = MaterialTheme.typography.labelMedium, color = OnSurfaceMuted)
         artwork.platformContext?.let {
@@ -244,6 +266,14 @@ private fun ReadOnlyTagPanel(artwork: ArtworkDetailDto, onArtistClick: (Int) -> 
         }
         artwork.publicationPlatform?.let {
             Text("Published on: ${it.name}", style = MaterialTheme.typography.bodySmall, color = OnSurfaceMuted)
+        }
+        if (!artwork.sourcePlatformUrl.isNullOrBlank()) {
+            Text(
+                text = "Open on platform ↗",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.clickable { uriHandler.openUri(artwork.sourcePlatformUrl) }
+            )
         }
     }
 }
@@ -269,22 +299,24 @@ private fun EditPanel(
     var pendingCreateName by remember { mutableStateOf("") }
 
     LaunchedEffect(characterQuery) {
-        if (characterQuery.length >= 2) {
-            runCatching { api.searchCharacters(characterQuery) }.onSuccess {
-                characterResults = it.items.map { c ->
-                    CharacterTagDto(id = c.id, name = c.name, series = c.series ?: SeriesDto(0, "Unknown"), confidence = null, isManual = true)
-                }
+    if (characterQuery.length >= 2) {
+        delay(300)
+        runCatching { api.searchCharacters(characterQuery) }.onSuccess {
+            characterResults = it.items.map { c ->
+                CharacterTagDto(id = c.id, name = c.name, series = c.series ?: SeriesDto(0, "Unknown"), confidence = null, isManual = true)
             }
-        } else characterResults = emptyList()
-    }
+        }
+    } else characterResults = emptyList()
+}
 
-    LaunchedEffect(artistQuery) {
-        if (artistQuery.length >= 2) {
-            runCatching { api.searchArtists(artistQuery) }.onSuccess {
-                artistResults = it.items.map { a -> ArtistTagDto(id = a.id, name = a.name, confidence = null, isManual = true) }
-            }
-        } else artistResults = emptyList()
-    }
+LaunchedEffect(artistQuery) {
+    if (artistQuery.length >= 2) {
+        delay(300)
+        runCatching { api.searchArtists(artistQuery) }.onSuccess {
+            artistResults = it.items.map { a -> ArtistTagDto(id = a.id, name = a.name, confidence = null, isManual = true) }
+        }
+    } else artistResults = emptyList()
+}
 
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Edit Tags", style = MaterialTheme.typography.titleMedium)
@@ -365,6 +397,10 @@ private fun EditPanel(
     if (showCreateArtistDialog) {
         AlertDialog(
             onDismissRequest = { showCreateArtistDialog = false },
+            modifier = Modifier.onEnterOrEscape(
+                onEnter = { onCreateArtist(pendingCreateName); showCreateArtistDialog = false },
+                onEscape = { showCreateArtistDialog = false },
+            ),
             title = { Text("Create Artist") },
             text = { Text("Create artist \"$pendingCreateName\"?") },
             confirmButton = {
@@ -373,7 +409,9 @@ private fun EditPanel(
                     showCreateArtistDialog = false
                 }) { Text("Create") }
             },
-            dismissButton = { OutlinedButton(onClick = { showCreateArtistDialog = false }) { Text("Cancel") } },
+            dismissButton = {
+                OutlinedButton(onClick = { showCreateArtistDialog = false }) { Text("Cancel") }
+            },
         )
     }
 }

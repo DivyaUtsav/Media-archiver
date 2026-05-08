@@ -71,7 +71,10 @@ def list_characters(
         .group_by(Character.id, Series.id)
     )
     if search:
-        stmt = stmt.where(func.lower(Character.name).like(f"%{search.lower()}%"))
+        stmt = stmt.where(
+            func.lower(Character.name).like(f"%{search.lower()}%")
+            | func.lower(Series.name).like(f"%{search.lower()}%")
+        )
     if series_id:
         stmt = stmt.where(Character.series_id == series_id)
     rows = db.execute(stmt.order_by(Character.name.asc()).limit(limit)).all()

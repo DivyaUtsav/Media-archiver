@@ -93,7 +93,13 @@ class ArtworkDetailViewModel(private val api: ApiClient, private val artworkId: 
         viewModelScope.launch {
             try {
                 val newChar = api.createCharacter(name, seriesId)
-                val cDto = CharacterTagDto(id = newChar.id, name = newChar.name, series = newChar.series!!, confidence = null, isManual = true)
+                val cDto = CharacterTagDto(
+                    id = newChar.id,
+                    name = newChar.name,
+                    series = newChar.series ?: SeriesDto(id = 0, name = "Unknown"),
+                    confidence = null,
+                    isManual = true,
+                )
                 val edit = _state.value.editState
                 if (edit != null) {
                     _state.value = _state.value.copy(editState = edit.copy(characters = edit.characters + cDto))

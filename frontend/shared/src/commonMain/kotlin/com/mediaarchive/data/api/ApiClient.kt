@@ -31,6 +31,7 @@ class ApiClient(private val baseUrl: () -> String) {
         artistIds: List<Int> = emptyList(),
         contentRatings: List<String> = emptyList(),
         artTypes: List<String> = emptyList(),
+        search: String = "",
     ): ArtworkPageDto = client.get("${baseUrl()}/artworks") {
         parameter("page", page)
         parameter("page_size", pageSize)
@@ -39,6 +40,7 @@ class ApiClient(private val baseUrl: () -> String) {
         artistIds.forEach { parameter("artist_id", it) }
         contentRatings.forEach { parameter("content_rating", it) }
         artTypes.forEach { parameter("art_type", it) }
+        if (search.isNotBlank()) parameter("search", search)
     }.body()
 
     suspend fun getArtwork(id: Int): ArtworkDetailDto =
@@ -94,7 +96,7 @@ class ApiClient(private val baseUrl: () -> String) {
     suspend fun getSeries(): SeriesListDto =
         client.get("${baseUrl()}/series").body()
 
-    suspend fun getSeriesCharacters(seriesId: Int): CharacterListDto =
+    suspend fun getSeriesCharacters(seriesId: Int): SeriesCharactersDto  =
         client.get("${baseUrl()}/series/$seriesId/characters").body()
 
     suspend fun searchCharacters(query: String, seriesId: Int? = null): CharacterListDto =

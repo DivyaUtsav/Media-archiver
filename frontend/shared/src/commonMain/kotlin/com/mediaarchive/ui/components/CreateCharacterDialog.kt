@@ -7,6 +7,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.mediaarchive.data.api.ApiClient
 import com.mediaarchive.data.api.SeriesDto
+import kotlinx.coroutines.delay
+import com.mediaarchive.ui.onEnterOrEscape
 
 @Composable
 fun CreateCharacterDialog(
@@ -23,11 +25,12 @@ fun CreateCharacterDialog(
     var isCreatingSeries by remember { mutableStateOf(false) }
 
     LaunchedEffect(seriesQuery) {
-        if (seriesQuery.length >= 1)
+        if (seriesQuery.length >= 1) {
+            delay(300)
             runCatching { api.getSeries() }.onSuccess {
-                seriesResults = it.items.filter { s -> (s.name ?: "").contains(seriesQuery, ignoreCase = true) }
+                seriesResults = it.items.filter { s -> s.name.contains(seriesQuery, ignoreCase = true) }
             }
-        else seriesResults = emptyList()
+        } else seriesResults = emptyList()
     }
 
     if (showCreateSeriesDialog) {
@@ -38,7 +41,6 @@ fun CreateCharacterDialog(
             confirmButton = {
                 Button(
                     onClick = {
-                        val nameToCreate = seriesQuery
                         isCreatingSeries = true
                         showCreateSeriesDialog = false
                     },
@@ -65,6 +67,10 @@ fun CreateCharacterDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        modifier = Modifier.onEnterOrEscape(
+            onEnter = { if (name.isNotBlank() && selectedSeries != null && !isCreatingSeries) onCreate(name, selectedSeries!!.id) },
+            onEscape = onDismiss,
+        ),
         title = { Text("Create Character") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {

@@ -57,7 +57,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                     AppContainer.updateBackendUrl(draftUrl)
                     saved = true
                 },
-                enabled = draftUrl.isNotBlank() && draftUrl != currentUrl || !saved,
+                enabled = draftUrl.isNotBlank() && (draftUrl != currentUrl || !saved),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(if (saved) "Saved ✓" else "Save")

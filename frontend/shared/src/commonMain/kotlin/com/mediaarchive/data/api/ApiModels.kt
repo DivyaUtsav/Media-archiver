@@ -15,6 +15,12 @@ data class SeriesDto(
 )
 
 @Serializable
+data class SeriesCharactersDto(
+    val series: SeriesDto,
+    val characters: List<CharacterDto>,
+)
+
+@Serializable
 data class CharacterDto(
     val id: Int,
     val name: String,

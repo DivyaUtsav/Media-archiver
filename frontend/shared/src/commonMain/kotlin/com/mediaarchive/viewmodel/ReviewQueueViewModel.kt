@@ -1,5 +1,6 @@
 package com.mediaarchive.viewmodel
 
+import com.mediaarchive.data.PendingCategory
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mediaarchive.data.api.*
@@ -157,11 +158,11 @@ class ReviewQueueViewModel(private val api: ApiClient) : ViewModel() {
                 api.completeQueueItem(
                     artwork.id,
                     CompleteQueueRequest(
-                        characters = if ("character" in pending) edit.characters.map { it.id } else null,
-                        artists = if ("artist" in pending) edit.artists.map { it.id } else null,
-                        contentRating = if ("content_rating" in pending) edit.contentRating else null,
-                        artType = if ("art_type" in pending) edit.artType else null,
-                        publicationPlatformId = if ("source_platform" in pending) edit.publicationPlatform?.id else null,
+                        characters = if (PendingCategory.CHARACTER in pending) edit.characters.map { it.id } else null,
+                        artists = if (PendingCategory.ARTIST in pending) edit.artists.map { it.id } else null,
+                        contentRating = if (PendingCategory.CONTENT_RATING in pending) edit.contentRating else null,
+                        artType = if (PendingCategory.ART_TYPE in pending) edit.artType else null,
+                        publicationPlatformId = if (PendingCategory.SOURCE_PLATFORM in pending) edit.publicationPlatform?.id else null,
                     ),
                 )
                 _state.value = _state.value.copy(isSubmitting = false)

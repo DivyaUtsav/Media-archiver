@@ -41,7 +41,7 @@ fun ArtworkCard(
                 onLongClick = onLongClick
             )
             .background(Surface700)
-            .aspectRatio(1f),
+            .aspectRatio(0.75f),
     ) {
         AsyncImage(
             model = mediaUrl,
