@@ -138,5 +138,39 @@ class ApiClient(private val baseUrl: () -> String) {
             setBody(CreateArtistRequest(name))
         }.body()
 
+    // ── Knowledge graph management ────────────────────────────────────────────
+
+    suspend fun updateSeries(id: Int, name: String): KgUpdateResponse =
+        client.patch("${baseUrl()}/series/$id") {
+            contentType(ContentType.Application.Json)
+            setBody(SeriesUpdateRequest(name))
+        }.body()
+
+    suspend fun deleteSeries(id: Int): KgDeleteResponse =
+        client.delete("${baseUrl()}/series/$id").body()
+
+    suspend fun updateCharacter(id: Int, name: String? = null, seriesId: Int? = null): KgUpdateResponse =
+        client.patch("${baseUrl()}/characters/$id") {
+            contentType(ContentType.Application.Json)
+            setBody(CharacterUpdateRequest(name = name, seriesId = seriesId))
+        }.body()
+
+    suspend fun deleteCharacter(id: Int): KgDeleteResponse =
+        client.delete("${baseUrl()}/characters/$id").body()
+
+    suspend fun updateArtist(id: Int, name: String): KgUpdateResponse =
+        client.patch("${baseUrl()}/artists/$id") {
+            contentType(ContentType.Application.Json)
+            setBody(ArtistUpdateRequest(name))
+        }.body()
+
+    suspend fun deleteArtist(id: Int): KgDeleteResponse =
+        client.delete("${baseUrl()}/artists/$id").body()
+
+    suspend fun getAllCharacters(limit: Int = 500): CharacterListDto =
+        client.get("${baseUrl()}/characters") {
+            parameter("limit", limit)
+        }.body()
+
     fun close() = client.close()
 }

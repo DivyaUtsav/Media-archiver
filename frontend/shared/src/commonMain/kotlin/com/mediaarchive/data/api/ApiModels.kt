@@ -224,3 +224,25 @@ data class CreateCharacterRequest(val name: String, @SerialName("series_id") val
 
 @Serializable
 data class CreateArtistRequest(val name: String)
+
+@Serializable
+data class KgUpdateResponse(val id: Int, val name: String)
+
+@Serializable
+data class KgDeleteResponse(
+    val id: Int,
+    val deleted: Boolean,
+    @SerialName("artwork_tags_removed") val artworkTagsRemoved: Int = 0,
+)
+
+@Serializable
+data class SeriesUpdateRequest(val name: String)
+
+@Serializable
+data class CharacterUpdateRequest(
+    val name: String? = null,
+    @SerialName("series_id") val seriesId: Int? = null,
+)
+
+@Serializable
+data class ArtistUpdateRequest(val name: String)

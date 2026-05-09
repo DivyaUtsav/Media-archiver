@@ -60,10 +60,10 @@ fun handleReviewKeyEvent(
     if (event.type != KeyEventType.KeyUp) return false
 
     val section = kbState.focusedSection ?: return false
-    val isVimDown = event.key == Key.J
-    val isVimUp = event.key == Key.K
-    val isVimLeft = event.key == Key.H
-    val isVimRight = event.key == Key.L
+    val isVimDown = !kbState.isSearchActive && event.key == Key.J
+    val isVimUp = !kbState.isSearchActive && event.key == Key.K
+    val isVimLeft = !kbState.isSearchActive && event.key == Key.H
+    val isVimRight = !kbState.isSearchActive && event.key == Key.L
     val isDown = event.key == Key.DirectionDown || isVimDown
     val isUp = event.key == Key.DirectionUp || isVimUp
     val isLeft = event.key == Key.DirectionLeft || isVimLeft

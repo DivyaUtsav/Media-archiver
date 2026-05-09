@@ -784,7 +784,10 @@ private fun TagFormContent(
 
     // ── Source platform ───────────────────────────────────────────────────
     if (PendingCategory.SOURCE_PLATFORM in pendingCategories) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(
+            modifier = Modifier.fillMaxWidth().sectionHighlight(ReviewSection.SOURCE_PLATFORM, kbState),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             SectionHeader(
                 "Publication Platform",
                 editState.publicationPlatformSuggestion?.let { "Suggested: ${it.name}" },

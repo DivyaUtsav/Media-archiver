@@ -243,3 +243,13 @@ class QueueCompleteResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+class SeriesUpdate(BaseModel):
+    name: str
+
+class CharacterUpdate(BaseModel):
+    name: str | None = None
+    series_id: int | None = None
+
+class ArtistUpdate(BaseModel):
+    name: str

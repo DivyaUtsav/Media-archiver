@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -36,6 +37,7 @@ fun GalleryScreen(
     onArtworkClick: (Int) -> Unit,
     onQueueClick: () -> Unit,
     onSettingsClick: () -> Unit,
+    onKnowledgeGraphClick: () -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
     val gridState = rememberLazyGridState()
@@ -145,6 +147,9 @@ fun GalleryScreen(
                                     if (searchActive) Icons.Default.Clear else Icons.Default.Search,
                                     contentDescription = if (searchActive) "Close search" else "Search",
                                 )
+                            }
+                            IconButton(onClick = onKnowledgeGraphClick) {
+                                Icon(Icons.Default.List, contentDescription = "Knowledge Graph")
                             }
                             // Queue badge
                             IconButton(onClick = onQueueClick) {

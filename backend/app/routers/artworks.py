@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import Session
+from sqlalchemy import distinct, func, select, or_, exists
 
 from app.database import get_db
 from app.models import (
@@ -80,7 +81,7 @@ def list_artworks(
     db: Session = Depends(get_db),
 ) -> ArtworkListResponse:
     stmt = select(Artwork).where(Artwork.status == "gallery")
-    if series_id or character_id or search:
+    if series_id or character_id:
         stmt = stmt.join(ArtworkCharacter, ArtworkCharacter.artwork_id == Artwork.id, isouter=True).join(
             Character, Character.id == ArtworkCharacter.character_id, isouter=True
         )
@@ -96,17 +97,29 @@ def list_artworks(
         stmt = stmt.where(Artwork.art_type.in_(art_type))
     if search:
         pattern = f"%{search}%"
-        stmt = (
-            stmt
-            .join(Series, Series.id == Character.series_id, isouter=True)
-            .join(ArtworkArtist, ArtworkArtist.artwork_id == Artwork.id, isouter=True)
-            .join(Artist, Artist.id == ArtworkArtist.artist_id, isouter=True)
-            .where(
-                Character.name.ilike(pattern)
-                | Series.name.ilike(pattern)
-                | Artist.name.ilike(pattern)
-            )
+        character_match = exists(
+            select(Character.id)
+            .join(ArtworkCharacter, ArtworkCharacter.character_id == Character.id)
+            .where(ArtworkCharacter.artwork_id == Artwork.id)
+            .where(Character.name.ilike(pattern))
+            .correlate(Artwork)
         )
+        series_match = exists(
+            select(Series.id)
+            .join(Character, Character.series_id == Series.id)
+            .join(ArtworkCharacter, ArtworkCharacter.character_id == Character.id)
+            .where(ArtworkCharacter.artwork_id == Artwork.id)
+            .where(Series.name.ilike(pattern))
+            .correlate(Artwork)
+        )
+        artist_match = exists(
+            select(Artist.id)
+            .join(ArtworkArtist, ArtworkArtist.artist_id == Artist.id)
+            .where(ArtworkArtist.artwork_id == Artwork.id)
+            .where(Artist.name.ilike(pattern))
+            .correlate(Artwork)
+        )
+        stmt = stmt.where(or_(character_match, series_match, artist_match))
     stmt = stmt.distinct()
 
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0

@@ -13,6 +13,7 @@ import com.mediaarchive.ui.theme.ArchiveTheme
 import com.mediaarchive.viewmodel.ArtworkDetailViewModel
 import com.mediaarchive.viewmodel.GalleryViewModel
 import com.mediaarchive.viewmodel.ReviewQueueViewModel
+import com.mediaarchive.viewmodel.KnowledgeGraphViewModel
 import kotlinx.serialization.Serializable
 
 // ── Type-safe route destinations ────────────────────────────────────────────
@@ -28,6 +29,9 @@ object QueueRoute
 
 @Serializable
 object SettingsRoute
+
+@Serializable
+object KnowledgeGraphRoute
 
 // ── App entry point ──────────────────────────────────────────────────────────
 
@@ -46,6 +50,7 @@ fun App() {
                     onArtworkClick = { id -> navController.navigate(DetailRoute(id)) },
                     onQueueClick = { navController.navigate(QueueRoute) },
                     onSettingsClick = { navController.navigate(SettingsRoute) },
+                    onKnowledgeGraphClick = { navController.navigate(KnowledgeGraphRoute) },
                 )
             }
 
@@ -73,6 +78,11 @@ fun App() {
 
             composable<SettingsRoute> {
                 SettingsScreen(onBack = { navController.popBackStack() })
+            }
+
+            composable<KnowledgeGraphRoute> {
+                val vm = viewModel<KnowledgeGraphViewModel> { KnowledgeGraphViewModel(api) }
+                KnowledgeGraphScreen(viewModel = vm, onBack = { navController.popBackStack() })
             }
         }
     }
