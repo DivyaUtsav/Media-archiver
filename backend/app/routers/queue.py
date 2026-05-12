@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 
@@ -237,6 +238,17 @@ def complete_pending_artwork(artwork_id: int, payload: QueueCompleteRequest, db:
     db.commit()
     db.refresh(artwork)
     return {"id": artwork.id, "status": artwork.status, "file_path": artwork.file_path, "updated_at": artwork.updated_at}
+
+@router.post("/{artwork_id}/skip")
+def skip_pending_artwork(artwork_id: int, db: Session = Depends(get_db)) -> dict:
+    artwork = db.get(Artwork, artwork_id)
+    if not artwork or artwork.status != "pending_review":
+        raise HTTPException(status_code=404, detail="Pending artwork not found.")
+    # Push to the back of the queue by moving ingestion_timestamp to now
+    artwork.ingestion_timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.add(artwork)
+    db.commit()
+    return {"id": artwork_id, "skipped": True}
 
 @router.delete("/{artwork_id}")
 def delete_pending_artwork(artwork_id: int, db: Session = Depends(get_db)) -> dict:
