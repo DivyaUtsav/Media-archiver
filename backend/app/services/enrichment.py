@@ -314,6 +314,11 @@ def run_enrichment(
         context = sidecar.get("platform_context") or {}
         source_platform_name = sidecar.get("source_platform", "")
         is_pixiv = source_platform_name.lower() == "pixiv"
+        author_is_artist = bool(context.get("author_is_artist", False))
+
+        # Only include author in the graph-matching text blob when the adapter
+        # flagged them as the artist — prevents Reddit posters polluting artist matches
+        author_text = str(context.get("author") or "") if author_is_artist else ""
 
         # Build text blob from all available context fields — platform-agnostic
         text_blob = " ".join(filter(None, [
@@ -321,7 +326,7 @@ def run_enrichment(
             str(context.get("title") or ""),
             str(context.get("flair") or ""),
             str(context.get("content") or ""),
-            str(context.get("author") or ""),
+            author_text,
             " ".join(context.get("tags") or []) if is_pixiv else "",
         ]))
 
@@ -411,12 +416,27 @@ def run_enrichment(
             if not name or name.lower() in known_artist_names:
                 continue
             matched_artist = _find_artist_by_name(db, name)
-            artists.append({
-                "name": name,
-                "artist_id": matched_artist.id if matched_artist else None,
-                "confidence": 0.70,
-                "source": "slm",
-            })
+            if matched_artist:
+                # Already in the knowledge graph — link with high confidence
+                artists.append({
+                    "name": matched_artist.name,
+                    "artist_id": matched_artist.id,
+                    "confidence": 0.85,
+                    "source": "slm",
+                })
+            else:
+                # SLM found an explicit credit (e.g. "by @handle") but we don't
+                # know this artist yet — auto-create them so the artwork can be
+                # fully tagged without manual intervention.
+                new_artist = Artist(name=name)
+                db.add(new_artist)
+                db.flush()
+                artists.append({
+                    "name": new_artist.name,
+                    "artist_id": new_artist.id,
+                    "confidence": 0.80,
+                    "source": "slm",
+                })
             known_artist_names.add(name.lower())
 
         if publication_platform is None and extraction.source_platform:
@@ -430,9 +450,14 @@ def run_enrichment(
                 "source": "slm",
             }
 
-        # ── Platform-agnostic author auto-tagging ──────────────────────────────
+        # ── Author auto-tagging ────────────────────────────────────────────────
+        # Only use context.author as the artist when the adapter explicitly
+        # signals it (author_is_artist=True). Platforms like Twitter and Pixiv
+        # set this because the poster is always the creator. Platforms like
+        # Reddit do not — the poster may just be sharing someone else's work.
         context_author = str(context.get("author") or "").strip()
-        if context_author and context_author.lower() not in known_artist_names:
+        author_is_artist = bool(context.get("author_is_artist", False))
+        if author_is_artist and context_author and context_author.lower() not in known_artist_names:
             matched_artist = _find_artist_by_name(db, context_author)
             artists.append({
                 "name": context_author,
@@ -627,13 +652,18 @@ def run_re_enrichment(db: Session) -> dict:
         context = artwork.platform_context or {}
         source_platform = db.get(SourcePlatform, artwork.source_platform_id)
         is_pixiv = source_platform and source_platform.name.lower() == "pixiv"
+        author_is_artist = bool(context.get("author_is_artist", False))
+
+        # Only include author in the graph-matching text blob when the adapter
+        # flagged them as the artist — prevents Reddit posters polluting artist matches
+        author_text = str(context.get("author") or "") if author_is_artist else ""
 
         text_blob = " ".join(filter(None, [
             str(context.get("subreddit") or ""),
             str(context.get("title") or ""),
             str(context.get("flair") or ""),
             str(context.get("content") or ""),
-            str(context.get("author") or ""),
+            author_text,
             " ".join(context.get("tags") or []) if is_pixiv else "",
         ]))
 
@@ -650,7 +680,9 @@ def run_re_enrichment(db: Session) -> dict:
                 ).delete()
                 resolved_categories.add("character")
 
-        # Re-evaluate artists
+        # Re-evaluate artists — respects author_is_artist flag via text_blob above.
+        # Graph matching only finds artists whose names appear in the text blob,
+        # so Reddit posters are already excluded from graph_artists at this point.
         if "artist" in pending_categories:
             if graph_artists and all(
                 a["confidence"] >= AUTO_TAG_MINIMUM and a.get("artist_id") is not None

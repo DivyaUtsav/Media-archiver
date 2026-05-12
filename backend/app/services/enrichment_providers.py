@@ -89,20 +89,22 @@ class OllamaTextExtractionProvider:
     def extract(self, subreddit: str, title: str, flair: str, already_identified: dict) -> TextExtractionResult:
         prompt = (
             "You are a metadata extractor for anime, manga, and video game fanart.\n"
-            "You will be given Reddit post information. Extract ONLY metadata you are\n"
-            "confident about. If you are not sure, omit it entirely — do not guess.\n\n"
+            "You will be given context signals about a piece of artwork — which may come\n"
+            "from any platform (Reddit, Twitter, a fan site, etc). Extract ONLY metadata\n"
+            "you are confident about. If you are not sure, omit it entirely — do not guess.\n\n"
             "Rules:\n"
             "- characters: ONLY extract if a character name is explicitly stated in the\n"
-            "  title or flair. Do not infer from subreddit alone.\n"
-            "- artists: ONLY extract if there is an explicit credit (e.g. 'by ArtistName',\n"
-            "  'art by', '[OC]' with a name, or a recognisable handle format).\n"
-            "- source_platform: ONLY extract if a platform is explicitly named or linked\n"
+            "  title or flair/tags. Do not infer from the community/subreddit name alone.\n"
+            "- artists: ONLY extract if there is an explicit credit in the title or flair\n"
+            "  (e.g. 'by ArtistName', 'art by', '@handle', '[OC]' with a name).\n"
+            "  Return the name only — strip any leading @ symbol.\n"
+            "- source_platform: ONLY extract if a platform is explicitly named\n"
             "  (e.g. 'Pixiv', 'Twitter', 'ArtStation'). Do not infer from URLs alone.\n"
             "- If a field has nothing confident to report, return empty list or null.\n"
             "- Do not repeat entities already identified (listed below).\n"
             "- Respond ONLY in JSON. No explanation, no preamble, no markdown.\n\n"
             f"Already identified: {json.dumps(already_identified)}\n\n"
-            f"Subreddit: {subreddit}\n"
+            f"Community/tags: {subreddit}\n"
             f"Title: {title}\n"
             f"Flair: {flair}\n\n"
             'Response format:\n'
@@ -126,9 +128,13 @@ class OllamaTextExtractionProvider:
             if name:
                 characters.append(CharacterHint(name=name, series=None))
 
+        raw_artists = [a if isinstance(a, str) else a.get("name", "") for a in list(parsed.get("artists") or [])]
+        # Strip leading @ — Ollama sometimes returns "@handle" verbatim from the title
+        artists = [a.lstrip("@").strip() for a in raw_artists if a]
+
         return TextExtractionResult(
             characters=characters,
-            artists=[a if isinstance(a, str) else a.get("name", "") for a in list(parsed.get("artists") or [])],
+            artists=artists,
             source_platform=parsed.get("source_platform"),
         )
 

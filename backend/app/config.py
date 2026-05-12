@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     provider_startup_checks: bool = True
     ingestion_batch_size: int = 20
 
+    # Reddit ingestion (cookie-based, no OAuth required)
+    reddit_username: str = ""         # your Reddit username (without u/)
+    reddit_cookies_file: str = ""     # path to Netscape cookies.txt exported from browser
+    reddit_min_score: int = 0         # skip saved posts below this upvote count (0 = no filter)
+    reddit_csv_path: str = ""         # path to saved_posts.csv from Reddit data export
+
     model_config = SettingsConfigDict(env_prefix="MEDIA_ARCHIVE_", env_file=".env")
 
 
