@@ -6,6 +6,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -93,6 +94,7 @@ fun ReviewQueueScreen(
                     onCharacterQueryChange = { characterQuery = it },
                     onArtistQueryChange = { artistQuery = it },
                     onSubmit = viewModel::submit,
+                    onSkip = viewModel::skipCurrent,
                     onBack = onBack,
                     isSubmitting = state.isSubmitting,
                 )
@@ -113,6 +115,16 @@ fun ReviewQueueScreen(
                     },
                     actions = {
                         if (state.currentArtwork != null) {
+                            IconButton(
+                                onClick = viewModel::skipCurrent,
+                                enabled = !state.isSubmitting,
+                            ) {
+                                Icon(
+                                    Icons.Default.SkipNext,
+                                    contentDescription = "Skip",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                             IconButton(onClick = { showDeleteConfirm = true }) {
                                 Icon(
                                     Icons.Default.Delete,
@@ -258,6 +270,7 @@ fun ReviewQueueScreen(
                                     onCreateCharacter = viewModel::createAndAddCharacter,
                                     onCreateArtist = viewModel::createAndAddArtist,
                                     onSubmit = viewModel::submit,
+                                    onSkip = viewModel::skipCurrent,
                                     isSubmitting = state.isSubmitting,
                                     submitError = state.submitError,
                                     characterQuery = characterQuery,
@@ -287,6 +300,7 @@ private fun ReviewArtworkPanel(
     onCreateCharacter: (String, Int) -> Unit,
     onCreateArtist: (String) -> Unit,
     onSubmit: () -> Unit,
+    onSkip: () -> Unit,
     isSubmitting: Boolean,
     submitError: String?,
     // FIX: These are the lifted query/results from ReviewQueueScreen — do NOT redeclare locally
@@ -405,6 +419,7 @@ private fun ReviewArtworkPanel(
                     onCreateCharacter = { name -> pendingCreateName = name; showCreateCharacterDialog = true },
                     onCreateArtist = { name -> pendingCreateName = name; showCreateArtistDialog = true },
                     onSubmit = onSubmit,
+                    onSkip = onSkip,
                     isSubmitting = isSubmitting,
                     submitError = submitError,
                 )
@@ -474,6 +489,7 @@ private fun ReviewArtworkPanel(
                 onCreateCharacter = { name -> pendingCreateName = name; showCreateCharacterDialog = true },
                 onCreateArtist = { name -> pendingCreateName = name; showCreateArtistDialog = true },
                 onSubmit = onSubmit,
+                onSkip = onSkip,
                 isSubmitting = isSubmitting,
                 submitError = submitError,
             )
@@ -542,6 +558,7 @@ private fun TagFormContent(
     onCreateCharacter: (String) -> Unit,
     onCreateArtist: (String) -> Unit,
     onSubmit: () -> Unit,
+    onSkip: () -> Unit,
     isSubmitting: Boolean,
     submitError: String?,
     kbState: ReviewKeyboardState = ReviewKeyboardState(),
@@ -802,6 +819,21 @@ private fun TagFormContent(
 
     submitError?.let {
         Text("Error: $it", color = RatingNSFW, style = MaterialTheme.typography.bodySmall)
+    }
+
+    OutlinedButton(
+        onClick = onSkip,
+        enabled = !isSubmitting,
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (kbState.focusedSection == ReviewSection.SKIP)
+                    Modifier.border(1.5.dp, AccentTeal, RoundedCornerShape(50))
+                else Modifier
+            ),
+    ) {
+        if (isSubmitting) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+        else Text(if (kbState.focusedSection == ReviewSection.SKIP) "↵ Skip" else "Skip")
     }
 
     Button(

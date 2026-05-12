@@ -91,6 +91,10 @@ class ApiClient(private val baseUrl: () -> String) {
         client.delete("${baseUrl()}/queue/$id")
     }
 
+    suspend fun skipQueueItem(id: Int) {
+        client.post("${baseUrl()}/queue/$id/skip")
+    }
+
     // ── Knowledge Graph ───────────────────────────────────────────────────────
 
     suspend fun getSeries(): SeriesListDto =

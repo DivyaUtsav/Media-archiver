@@ -186,4 +186,18 @@ class ReviewQueueViewModel(private val api: ApiClient) : ViewModel() {
             }
         }
     }
+
+    fun skipCurrent() {
+        val artwork = _state.value.currentArtwork ?: return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isSubmitting = true, submitError = null)
+            try {
+                api.skipQueueItem(artwork.id)
+                _state.value = _state.value.copy(isSubmitting = false)
+                loadPlatformsAndNext()
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(isSubmitting = false, submitError = "Failed to skip: ${e.message}")
+            }
+        }
+    }
 }

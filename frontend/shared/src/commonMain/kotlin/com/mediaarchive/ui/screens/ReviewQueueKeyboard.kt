@@ -13,6 +13,7 @@ enum class ReviewSection {
     CHARACTER,
     ARTIST,
     SOURCE_PLATFORM,
+    SKIP,
     SUBMIT,
 }
 
@@ -40,6 +41,7 @@ fun handleReviewKeyEvent(
     onCharacterQueryChange: (String) -> Unit,
     onArtistQueryChange: (String) -> Unit,
     onSubmit: () -> Unit,
+    onSkip: () -> Unit,
     onBack: () -> Unit,
     isSubmitting: Boolean,
 ): Boolean {
@@ -217,6 +219,12 @@ fun handleReviewKeyEvent(
         }
     }
 
+    // ── Skip section — Enter to skip ──────────────────────────────────────
+    if (section == ReviewSection.SKIP && isEnter && !isSubmitting) {
+        onSkip()
+        return true
+    }
+
     // ── Submit section ────────────────────────────────────────────────────
     if (section == ReviewSection.SUBMIT && isEnter && !isSubmitting) {
         onSubmit()
@@ -233,6 +241,7 @@ fun buildSectionList(pendingCategories: List<String>): List<ReviewSection> {
     if (PendingCategory.CHARACTER in pendingCategories) sections.add(ReviewSection.CHARACTER)
     if (PendingCategory.ARTIST in pendingCategories) sections.add(ReviewSection.ARTIST)
     if (PendingCategory.SOURCE_PLATFORM in pendingCategories) sections.add(ReviewSection.SOURCE_PLATFORM)
+    sections.add(ReviewSection.SKIP)
     sections.add(ReviewSection.SUBMIT)
     return sections
 }
