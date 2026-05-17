@@ -33,6 +33,17 @@ class Settings(BaseSettings):
     reddit_min_score: int = 0         # skip saved posts below this upvote count (0 = no filter)
     reddit_csv_path: str = ""         # path to saved_posts.csv from Reddit data export
 
+    # New AI providers
+    # Text/character extraction
+    # Options: gemma4, gemma4_pixiv, ollama, ollama_pixiv, none
+    # ollama_text_model: set to gemma4:e2b when using gemma4 providers
+    # Content rating
+    # Options: wd_tagger, huggingface, none
+    wd_tagger_model: str = "p1atdev/wd-swinv2-tagger-v3-hf"
+    # Art type classification
+    # Options: gemma4, ollama, none
+    # ollama_vision_model: set to gemma4:e2b when using gemma4 art type provider
+
     model_config = SettingsConfigDict(env_prefix="MEDIA_ARCHIVE_", env_file=".env")
 
 
