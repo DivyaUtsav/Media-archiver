@@ -439,12 +439,19 @@ def run_enrichment(
                 })
             known_artist_names.add(name.lower())
 
-        if publication_platform is None and extraction.source_platform:
-            matched_platform = _find_platform_by_name(db, extraction.source_platform)
+        # Gemma 4 occasionally returns source_platform as a list — normalise to string
+        raw_platform = extraction.source_platform
+        if isinstance(raw_platform, list):
+            raw_platform = raw_platform[0] if raw_platform else None
+        if isinstance(raw_platform, str):
+            raw_platform = raw_platform.strip() or None
+
+        if publication_platform is None and raw_platform:
+            matched_platform = _find_platform_by_name(db, raw_platform)
             # If SLM identified the same platform as ingestion source, it's reliable
             conf = 0.90 if (matched_platform and platform_row and matched_platform.id == platform_row.id) else 0.75
             publication_platform = {
-                "name": extraction.source_platform,
+                "name": raw_platform,
                 "platform_id": matched_platform.id if matched_platform else None,
                 "confidence": conf,
                 "source": "slm",
