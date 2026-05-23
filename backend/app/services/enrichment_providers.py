@@ -129,17 +129,17 @@ def _parse_json(raw: str) -> dict:
 
 class Gemma4TextExtractionProvider:
     """
-    Text extraction using Gemma 4 E2B via Ollama.
+    Text extraction using Gemma 4 via Ollama.
 
     Handles multilingual content natively — Japanese character/series names
-    from Pixiv tags are translated to English when the match is confident.
-    Used for both Reddit/Twitter context and Pixiv tags (replacing the
-    separate PixivOllamaTextExtractionProvider when configured).
+    are translated to English when confident. Extracts series hints on all
+    platforms (not just Pixiv) so series-aware character disambiguation works
+    for Reddit/Twitter posts too (e.g. "Nicole [ZZZ]", "Kaguya-sama fanart").
 
     Set in .env:
         MEDIA_ARCHIVE_ENRICHMENT_TEXT_PROVIDER=gemma4
         MEDIA_ARCHIVE_ENRICHMENT_PIXIV_TEXT_PROVIDER=gemma4_pixiv
-        MEDIA_ARCHIVE_OLLAMA_TEXT_MODEL=gemma4:e2b
+        MEDIA_ARCHIVE_OLLAMA_TEXT_MODEL=gemma4:e4b
     """
 
     def extract(self, subreddit: str, title: str, flair: str, already_identified: dict) -> TextExtractionResult:
@@ -151,8 +151,15 @@ class Gemma4TextExtractionProvider:
             "Rules:\n"
             "- characters: ONLY extract if a character name is explicitly stated in the\n"
             "  title or flair/tags. Do not infer from the community/subreddit name alone.\n"
-            "  If the name is in Japanese, translate it to English if you are confident.\n"
-            "  If not confident in the translation, omit it.\n"
+            "  For each character, also extract the series name if it appears — series hints\n"
+            "  appear in many forms: brackets like 'Nicole [ZZZ]' or 'Hu Tao (Genshin)',\n"
+            "  subreddit names like r/GenshinImpact, or titles like 'Kaguya-sama fanart'.\n"
+            "  Series name should be the canonical full title, e.g. 'Zenless Zone Zero',\n"
+            "  'Genshin Impact', 'Kaguya-sama: Love is War'. Return null if not confident.\n"
+            "  If text is in Japanese, translate character and series names to their\n"
+            "  commonly known English names. Only translate when confident — omit if not.\n"
+            "  Examples: '胡桃' → 'Hu Tao', series '原神' → 'Genshin Impact'.\n"
+            "            'かぐや' in r/Kaguyasama → 'Kaguya Shinomiya', series 'Kaguya-sama: Love is War'.\n"
             "- artists: ONLY extract if there is an explicit credit in the title or flair\n"
             "  (e.g. 'by ArtistName', 'art by', '@handle', '[OC]' with a name).\n"
             "  Return the name only — strip any leading @ symbol.\n"
@@ -165,8 +172,9 @@ class Gemma4TextExtractionProvider:
             f"Community/tags: {subreddit}\n"
             f"Title: {title}\n"
             f"Flair: {flair}\n\n"
-            'Response format:\n'
-            '{"characters": ["name1", "name2"], "artists": ["name1"], "source_platform": null}'
+            "Response format:\n"
+            '{"characters": [{"name": "Nicole", "series": "Zenless Zone Zero"}], '
+            '"artists": ["name1"], "source_platform": null}'
         )
         raw = _ollama_generate(settings.ollama_text_model, prompt)
         parsed = _parse_json(raw)
@@ -174,9 +182,15 @@ class Gemma4TextExtractionProvider:
         raw_characters = list(parsed.get("characters") or [])
         characters = []
         for c in raw_characters:
-            name = c if isinstance(c, str) else c.get("name", "")
-            if name:
-                characters.append(CharacterHint(name=name.strip(), series=None))
+            if isinstance(c, str):
+                # Model returned plain string despite format instruction — accept it
+                if c.strip():
+                    characters.append(CharacterHint(name=c.strip(), series=None))
+            elif isinstance(c, dict):
+                name = (c.get("name") or "").strip()
+                series = (c.get("series") or "").strip() or None
+                if name:
+                    characters.append(CharacterHint(name=name, series=series))
 
         raw_artists = [a if isinstance(a, str) else a.get("name", "") for a in list(parsed.get("artists") or [])]
         artists = [a.lstrip("@").strip() for a in raw_artists if a]
@@ -200,7 +214,7 @@ class Gemma4PixivTextExtractionProvider:
 
     Set in .env:
         MEDIA_ARCHIVE_ENRICHMENT_PIXIV_TEXT_PROVIDER=gemma4_pixiv
-        MEDIA_ARCHIVE_OLLAMA_TEXT_MODEL=gemma4:e2b
+        MEDIA_ARCHIVE_OLLAMA_TEXT_MODEL=gemma4:e4b
     """
 
     def extract(self, subreddit: str, title: str, flair: str, already_identified: dict) -> TextExtractionResult:
@@ -442,6 +456,208 @@ class WDTaggerContentRatingProvider:
         return ContentRatingResult(value=value, confidence=round(confidence, 4), source="wd_tagger")
 
 
+# ── Marqo NSFW content rating (primary, replaces WD tagger for rating) ────────
+
+class MarqoNSFWContentRatingProvider:
+    """
+    Content rating using Marqo/nsfw-image-detection-384.
+
+    Trained on 220k images including real photos, drawings, Rule 34, and
+    AI-generated images — far better than general classifiers for a mixed
+    archive that includes anime, cosplay, and AI art.
+
+    Maps binary SFW/NSFW output to our three-tier scale via thresholds:
+        NSFW score >= nsfw_threshold       → NSFW
+        NSFW score >= suggestive_threshold → Suggestive
+        Otherwise                          → SFW
+
+    Thresholds shift when subreddit context is known-NSFW.
+
+    Install:
+        pip install transformers pillow torch
+
+    Set in .env:
+        MEDIA_ARCHIVE_ENRICHMENT_CONTENT_PROVIDER=marqo
+    """
+
+    _MODEL_NAME = "hf_hub:Marqo/nsfw-image-detection-384"
+
+    def __init__(self):
+        import timm
+        import torch
+
+        self._model = timm.create_model(self._MODEL_NAME, pretrained=True)
+        self._model = self._model.eval()
+        data_config = timm.data.resolve_model_data_config(self._model)
+        self._transforms = timm.data.create_transform(**data_config, is_training=False)
+        self._class_names = self._model.pretrained_cfg["label_names"]
+        self._torch = torch
+
+    def classify(self, image_path: Path, subreddit_is_nsfw: bool) -> ContentRatingResult:
+        from PIL import Image
+
+        image = Image.open(image_path).convert("RGB")
+        tensor = self._transforms(image).unsqueeze(0)
+
+        with self._torch.no_grad():
+            probs = self._model(tensor).softmax(dim=-1).cpu()[0]
+
+        scores = {name: float(p) for name, p in zip(self._class_names, probs)}
+
+        nsfw_score = scores.get("nsfw", scores.get("NSFW", 0.0))
+        sfw_score = scores.get("sfw", scores.get("SFW", 1.0 - nsfw_score))
+
+        if subreddit_is_nsfw:
+            nsfw_threshold, suggestive_threshold = 0.45, 0.20
+        else:
+            nsfw_threshold, suggestive_threshold = 0.70, 0.35
+
+        if nsfw_score >= nsfw_threshold:
+            return ContentRatingResult(value="NSFW", confidence=round(nsfw_score, 4), source="marqo")
+        if nsfw_score >= suggestive_threshold:
+            return ContentRatingResult(value="Suggestive", confidence=round(nsfw_score, 4), source="marqo")
+        return ContentRatingResult(value="SFW", confidence=round(sfw_score, 4), source="marqo")
+
+
+# ── Anime AI detection (dedicated classifier) ──────────────────────────────────
+
+class AnimeAIDetectProvider:
+    """
+    Detects AI-generated anime art using saltacc/anime-ai-detect (BEiT).
+
+    Trained specifically to distinguish AI-generated anime from human-drawn art.
+    96% accuracy on high-quality AI generations. More reliable than asking a
+    general vision LLM (gemma4) to make this judgement.
+
+    Returns (is_ai_generated: bool, confidence: float).
+
+    Install:
+        pip install transformers pillow torch
+
+    Used internally by CompositeArtTypeProvider.
+    """
+
+    _MODEL_NAME = "saltacc/anime-ai-detect"
+
+    def __init__(self):
+        from transformers import pipeline
+        # BEiT model — pipeline is the correct loading API for this model
+        self._pipeline = pipeline("image-classification", model=self._MODEL_NAME)
+
+    def is_ai_generated(self, image_path: Path) -> tuple[bool, float]:
+        from PIL import Image
+
+        image = Image.open(image_path).convert("RGB")
+        results = self._pipeline(image)
+
+        scores = {r["label"].lower(): r["score"] for r in results}
+
+        # Model labels: "artificial" and "human"
+        ai_score = scores.get("artificial", scores.get("ai", 0.0))
+        if ai_score == 0.0:
+            human_score = scores.get("human", 0.0)
+            ai_score = 1.0 - human_score
+
+        return ai_score >= 0.60, round(ai_score, 4)
+
+
+# ── Anime/real (cosplay) detection ─────────────────────────────────────────────
+
+class AnimeRealClassProvider:
+    """
+    Detects whether an image is a real photo (cosplay, IRL) vs drawn anime art.
+    Uses deepghs/anime_real_cls via the dghs-imgutils library.
+
+    This is the missing piece for cosplay classification — cosplay images are
+    real photos of people in costume, which a general vision LLM confuses with
+    Artwork. A dedicated trained classifier is far more reliable.
+
+    Returns (is_real_photo: bool, confidence: float).
+
+    Install:
+        pip install dghs-imgutils pillow
+
+    Used internally by CompositeArtTypeProvider.
+    """
+
+    def __init__(self):
+        # Eagerly import to catch missing dependency at startup, not at first use.
+        # imgutils downloads model weights on first call and caches them.
+        from imgutils.validate import anime_real_score  # noqa: F401
+
+    def is_real_photo(self, image_path: Path) -> tuple[bool, float]:
+        from imgutils.validate import anime_real_score
+        from PIL import Image
+
+        image = Image.open(image_path).convert("RGB")
+        scores = anime_real_score(image)
+
+        # Returns {"anime": float, "real": float}
+        real_score = scores.get("real", 0.0)
+        return real_score >= 0.60, round(real_score, 4)
+
+
+# ── Composite art type provider (primary) ──────────────────────────────────────
+
+class CompositeArtTypeProvider:
+    """
+    Art type classification using a chain of dedicated classifiers:
+
+        1. AnimeAIDetectProvider  → is it AI-generated?
+        2. AnimeRealClassProvider → is it a real photo / cosplay?
+        3. Default                → Artwork (drawn/illustrated)
+
+    This is far more reliable than asking gemma4 vision to classify art type,
+    because each classifier is purpose-trained for its specific task.
+
+    Decision logic:
+    - AI confidence >= 0.75  → "AI Generated" (high bar, prefer false negative)
+    - Real photo conf >= 0.60 → "Cosplay"
+    - Otherwise              → "Artwork"
+
+    The AI check runs first because some AI art could look like a real photo
+    and we want to catch those before the real-photo classifier fires.
+
+    Install:
+        pip install transformers pillow torch
+
+    Set in .env:
+        MEDIA_ARCHIVE_ENRICHMENT_ART_TYPE_PROVIDER=composite
+    """
+
+    _AI_THRESHOLD = 0.75
+    _REAL_THRESHOLD = 0.60
+
+    def __init__(self):
+        self._ai_detector = AnimeAIDetectProvider()
+        self._real_detector = AnimeRealClassProvider()
+
+    def classify(self, image_path: Path) -> ArtTypeResult:
+        ai_conf = 0.0
+        real_conf = 0.0
+
+        # Step 1: AI-generated check
+        try:
+            is_ai, ai_conf = self._ai_detector.is_ai_generated(image_path)
+            if is_ai and ai_conf >= self._AI_THRESHOLD:
+                return ArtTypeResult(value="AI Generated", confidence=ai_conf, source="anime_ai_detect")
+        except Exception:
+            pass
+
+        # Step 2: Real photo / cosplay check
+        try:
+            is_real, real_conf = self._real_detector.is_real_photo(image_path)
+            if is_real and real_conf >= self._REAL_THRESHOLD:
+                return ArtTypeResult(value="Cosplay", confidence=real_conf, source="anime_real_cls")
+        except Exception:
+            pass
+
+        # Step 3: Default — drawn artwork
+        # Confidence derived from how strongly both classifiers ruled out their categories
+        artwork_conf = round((1.0 - ai_conf) * (1.0 - real_conf), 4)
+        return ArtTypeResult(value="Artwork", confidence=max(artwork_conf, 0.60), source="composite")
+
+
 # ── Legacy HuggingFace content rating (kept for backwards compat) ──────────────
 
 class HuggingFaceContentRatingProvider:
@@ -584,6 +800,8 @@ def get_text_provider(name: str) -> TextExtractionProvider:
 
 def get_content_provider(name: str) -> ContentRatingProvider:
     normalized = name.strip().lower()
+    if normalized == "marqo":
+        return MarqoNSFWContentRatingProvider()
     if normalized == "wd_tagger":
         return WDTaggerContentRatingProvider()
     if normalized in {"huggingface", "hf"}:
@@ -593,6 +811,8 @@ def get_content_provider(name: str) -> ContentRatingProvider:
 
 def get_art_type_provider(name: str) -> ArtTypeProvider:
     normalized = name.strip().lower()
+    if normalized == "composite":
+        return CompositeArtTypeProvider()
     if normalized == "gemma4":
         return Gemma4ArtTypeProvider()
     if normalized == "ollama":
@@ -625,6 +845,25 @@ def _check_wd_tagger() -> tuple[bool, str]:
         return False, f"missing dependency: {exc} — run: pip install transformers timm"
 
 
+def _check_composite_art_type() -> tuple[bool, str]:
+    issues = []
+    try:
+        import timm  # noqa: F401
+    except ImportError:
+        issues.append("timm missing (for Marqo NSFW)")
+    try:
+        import transformers  # noqa: F401
+    except ImportError:
+        issues.append("transformers missing (for anime-ai-detect)")
+    try:
+        import imgutils  # noqa: F401
+    except ImportError:
+        issues.append("dghs-imgutils missing (for anime_real_cls) — run: pip install dghs-imgutils")
+    if issues:
+        return False, "; ".join(issues)
+    return True, "timm + transformers + dghs-imgutils available"
+
+
 def provider_health_snapshot() -> dict:
     snapshot = {
         "text_provider": settings.enrichment_text_provider,
@@ -641,7 +880,13 @@ def provider_health_snapshot() -> dict:
         snapshot["checks"]["text"] = {"ok": True, "detail": "disabled (provider=none)"}
 
     content_name = settings.enrichment_content_provider.strip().lower()
-    if content_name == "wd_tagger":
+    if content_name == "marqo":
+        try:
+            import timm  # noqa: F401
+            snapshot["checks"]["content_rating"] = {"ok": True, "detail": f"timm available (model: Marqo/nsfw-image-detection-384)"}
+        except ImportError as exc:
+            snapshot["checks"]["content_rating"] = {"ok": False, "detail": f"timm missing: {exc} — run: pip install timm"}
+    elif content_name == "wd_tagger":
         ok, detail = _check_wd_tagger()
         snapshot["checks"]["content_rating"] = {"ok": ok, "detail": detail}
     elif content_name in {"huggingface", "hf"}:
@@ -654,7 +899,10 @@ def provider_health_snapshot() -> dict:
         snapshot["checks"]["content_rating"] = {"ok": True, "detail": "disabled (provider=none)"}
 
     art_name = settings.enrichment_art_type_provider.strip().lower()
-    if art_name in {"gemma4", "ollama"}:
+    if art_name == "composite":
+        ok, detail = _check_composite_art_type()
+        snapshot["checks"]["art_type"] = {"ok": ok, "detail": detail}
+    elif art_name in {"gemma4", "ollama"}:
         ok, detail = _check_ollama_model(settings.ollama_vision_model)
         snapshot["checks"]["art_type"] = {"ok": ok, "detail": detail}
     else:

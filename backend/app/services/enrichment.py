@@ -87,12 +87,70 @@ def _find_character_by_name(db: Session, name: str) -> Character | None:
     """
     Find a character by name, trying both word orderings.
     'Mahiru Shiina' will also check 'Shiina Mahiru'.
+    Returns None if the name is ambiguous (multiple characters with same name).
     """
     for variant in _name_variants(name):
-        match = db.scalar(select(Character).where(Character.name.ilike(variant)))
-        if match:
-            return match
+        matches = db.execute(
+            select(Character).where(Character.name.ilike(variant))
+        ).scalars().all()
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            # Ambiguous — don't return a random match; caller should use series hint
+            return None
     return None
+
+
+def _find_character_with_series_hint(
+    db: Session, name: str, series_hint: str | None
+) -> Character | None:
+    """
+    Series-aware character lookup. Handles:
+    - Ambiguous names: 'Nicole' in Genshin vs ZZZ — resolved by series_hint
+    - Partial/single names: 'Kaguya' + series 'Kaguya-sama' → Kaguya Shinomiya
+    - Fallback: no series hint and name is unambiguous → return the single match
+
+    Partial name matching works by checking whether the character's full name
+    starts with, ends with, or contains the given name as a whole word.
+    """
+    # ── Step 1: if we have a series hint, try to narrow by series first ────────
+    if series_hint:
+        series = _find_series_by_name(db, series_hint)
+        if series:
+            # Try exact + word-order variants scoped to this series
+            for variant in _name_variants(name):
+                match = db.scalar(
+                    select(Character).where(
+                        Character.name.ilike(variant),
+                        Character.series_id == series.id,
+                    )
+                )
+                if match:
+                    return match
+
+            # Try partial match within the series — "Kaguya" → "Kaguya Shinomiya"
+            partial_pattern = f"%{name}%"
+            candidates = db.execute(
+                select(Character).where(
+                    Character.name.ilike(partial_pattern),
+                    Character.series_id == series.id,
+                )
+            ).scalars().all()
+            # Only use partial match if it's unambiguous within the series
+            if len(candidates) == 1:
+                return candidates[0]
+            # If multiple partial matches, try to find one that starts with the hint
+            # e.g. "Kaguya" → prefer "Kaguya Shinomiya" over "Kaguya-hime"
+            name_lower = name.lower()
+            prefix_matches = [
+                c for c in candidates
+                if c.name.lower().startswith(name_lower)
+            ]
+            if len(prefix_matches) == 1:
+                return prefix_matches[0]
+
+    # ── Step 2: fall back to global name lookup (unambiguous only) ────────────
+    return _find_character_by_name(db, name)
 
 
 def _find_series_by_name(db: Session, name: str) -> Series | None:
@@ -122,8 +180,10 @@ def _try_auto_create_character(db: Session, hint: CharacterHint) -> Character | 
     series = _find_series_by_name(db, hint.series)
     if not series:
         return None
-    # Check all name variants before creating to prevent duplicates
-    existing = _find_character_by_name(db, hint.name)
+    # Check all name variants before creating to prevent duplicates.
+    # Use series-aware lookup so a new "Nicole (ZZZ)" doesn't collide with
+    # an existing "Nicole (Genshin)" when the series is known.
+    existing = _find_character_with_series_hint(db, hint.name, hint.series)
     if existing:
         return existing
     new_character = Character(name=hint.name, series_id=series.id)
@@ -371,7 +431,7 @@ def run_enrichment(
             if already_known:
                 continue
 
-            matched = _find_character_by_name(db, hint.name)
+            matched = _find_character_with_series_hint(db, hint.name, hint.series)
 
             if matched:
                 characters.append({
