@@ -19,7 +19,7 @@ from app.models import (
     SourcePlatform,
 )
 from app.schemas import QueueCompleteRequest
-from app.services.storage import resolve_review_destination
+from app.services.storage import resolve_review_destination, relocate_artwork_file
 from app.services.enrichment import run_enrichment, run_re_enrichment
 
 
@@ -224,13 +224,9 @@ def complete_pending_artwork(artwork_id: int, payload: QueueCompleteRequest, db:
         ).all()
         series_names = sorted({name for (name,) in existing_series})
 
-    current_path = Path(artwork.file_path)
-    destination_dir = resolve_review_destination(settings.archive_root, series_names)
-    destination_dir.mkdir(parents=True, exist_ok=True)
-    destination_path = destination_dir / current_path.name
-    if current_path.exists():
-        shutil.move(str(current_path), str(destination_path))
-        artwork.file_path = str(destination_path)
+    # Use relocate_artwork_file so collision handling and file_missing tracking
+    # are consistent with post-completion edits via PATCH /artworks/{id}/tags
+    relocate_artwork_file(db, artwork, settings.archive_root)
 
     db.query(ArtworkPendingTag).where(ArtworkPendingTag.artwork_id == artwork_id).delete()
     artwork.status = "gallery"

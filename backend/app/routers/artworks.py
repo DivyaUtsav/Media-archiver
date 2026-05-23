@@ -17,6 +17,8 @@ from app.models import (
     SourcePlatform,
 )
 from app.schemas import ArtworkListItem, ArtworkListResponse, ArtworkTagPatch, ArtworkBulkPatch, ArtworkDetail, ArtworkTagPatchResponse
+from app.services.storage import relocate_artwork_file
+from app.config import settings
 
 router = APIRouter(prefix="/artworks", tags=["artworks"])
 
@@ -261,6 +263,11 @@ def patch_artwork_tags(artwork_id: int, payload: ArtworkTagPatch, db: Session = 
         _replace_artwork_artists(db, artwork.id, payload.artists)
 
     db.add(artwork)
+
+    # Relocate file if characters changed — series membership may have shifted
+    if payload.characters is not None:
+        relocate_artwork_file(db, artwork, settings.archive_root)
+
     db.commit()
     db.refresh(artwork)
     return {"id": artwork.id, "updated_at": artwork.updated_at}
@@ -294,7 +301,11 @@ def patch_bulk_artworks(payload: ArtworkBulkPatch, db: Session = Depends(get_db)
             _replace_artwork_characters(db, artwork.id, payload.characters)
         if payload.artists is not None:
             _replace_artwork_artists(db, artwork.id, payload.artists)
-            
+
+        # Relocate file if characters changed — series membership may have shifted
+        if payload.characters is not None:
+            relocate_artwork_file(db, artwork, settings.archive_root)
+
         db.add(artwork)
 
     db.commit()

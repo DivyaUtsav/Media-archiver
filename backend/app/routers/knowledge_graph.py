@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Artist, Artwork, ArtworkArtist, ArtworkCharacter, Character, Series, SourcePlatform
+from app.config import settings
+from app.services.storage import relocate_artwork_file
 from app.schemas import (
     ArtistCreate, ArtistOut, ArtistUpdate,
     CharacterCreate, CharacterOut, CharacterUpdate,
@@ -74,6 +76,22 @@ def update_series(series_id: int, payload: SeriesUpdate, db: Session = Depends(g
         raise HTTPException(status_code=409, detail="A series with that name already exists.")
     series.name = name
     db.add(series)
+    db.flush()  # flush so _current_series_names sees the new name
+
+    # Relocate all artworks that belong to this series — directory name changed
+    affected_artwork_ids = db.execute(
+        select(Artwork.id)
+        .join(ArtworkCharacter, ArtworkCharacter.artwork_id == Artwork.id)
+        .join(Character, Character.id == ArtworkCharacter.character_id)
+        .where(Character.series_id == series_id)
+        .where(Artwork.status == "gallery")
+        .distinct()
+    ).scalars().all()
+    for artwork_id in affected_artwork_ids:
+        artwork = db.get(Artwork, artwork_id)
+        if artwork:
+            relocate_artwork_file(db, artwork, settings.archive_root)
+
     db.commit()
     db.refresh(series)
     return {"id": series.id, "name": series.name}
@@ -181,6 +199,22 @@ def update_character(character_id: int, payload: CharacterUpdate, db: Session = 
             raise HTTPException(status_code=404, detail="Target series not found.")
         character.series_id = payload.series_id
     db.add(character)
+    db.flush()  # flush so _current_series_names sees updated series_id
+
+    # If series changed, relocate all artworks that have this character tagged
+    if payload.series_id is not None:
+        affected_artwork_ids = db.execute(
+            select(Artwork.id)
+            .join(ArtworkCharacter, ArtworkCharacter.artwork_id == Artwork.id)
+            .where(ArtworkCharacter.character_id == character_id)
+            .where(Artwork.status == "gallery")
+            .distinct()
+        ).scalars().all()
+        for artwork_id in affected_artwork_ids:
+            artwork = db.get(Artwork, artwork_id)
+            if artwork:
+                relocate_artwork_file(db, artwork, settings.archive_root)
+
     db.commit()
     db.refresh(character)
     series = db.get(Series, character.series_id)
@@ -200,8 +234,28 @@ def delete_character(character_id: int, db: Session = Depends(get_db)) -> dict:
         select(func.count()).select_from(ArtworkCharacter)
         .where(ArtworkCharacter.character_id == character_id)
     ) or 0
+
+    # Relocate affected artworks BEFORE removing tags — once tags are gone
+    # _current_series_names won't know where they came from
+    affected_artwork_ids = db.execute(
+        select(Artwork.id)
+        .join(ArtworkCharacter, ArtworkCharacter.artwork_id == Artwork.id)
+        .where(ArtworkCharacter.character_id == character_id)
+        .where(Artwork.status == "gallery")
+        .distinct()
+    ).scalars().all()
+
     # Remove all artwork tags for this character
     db.query(ArtworkCharacter).where(ArtworkCharacter.character_id == character_id).delete()
+    db.flush()
+
+    # Now relocate — with the tag removed, series membership recalculates correctly
+    # (may now be _pending or _multi_series if other characters remain)
+    for artwork_id in affected_artwork_ids:
+        artwork = db.get(Artwork, artwork_id)
+        if artwork:
+            relocate_artwork_file(db, artwork, settings.archive_root)
+
     db.delete(character)
     db.commit()
     return {"id": character_id, "deleted": True, "artwork_tags_removed": artwork_count}
